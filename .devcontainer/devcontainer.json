@@ -1,0 +1,26 @@
+{
+    "name": "Go + Node.js",
+    "image": "mcr.microsoft.com/vscode/devcontainers/go:1.22",
+    "features": {
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "22"
+        },
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    },
+    "forwardPorts": [
+		5173,
+        8765,
+		9650
+	],
+	"portsAttributes": {
+		"5173": {
+			"label": "Frontend"
+		},
+		"8765": {
+			"label": "Faucet"
+		},
+		"9650": {
+			"label": "Node-1"
+		}
+	}
+}
