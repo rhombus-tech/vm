@@ -6,4 +6,6 @@ package consts
 const (
 	// Action TypeIDs
 	TransferID uint8 = 0
+	ContractVerificationID      uint8 = 1
+	ContractVerificationResultID uint8 = 2
 )
