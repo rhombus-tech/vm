@@ -6,6 +6,7 @@ import (
     "github.com/ava-labs/hypersdk/chain"
     "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/state"
+    "github.com/rhombus-tech/hypersdk/x/contracts/runtime/events"
     "sort"
 )
 
@@ -24,13 +25,19 @@ type RoughtimeStamp struct {
     Signature []byte
 }
 
+type TEEExecResult struct {
+    ContractAddr []byte
+    Events      []events.Event
+    StateUpdates map[string][]byte
+}
+
 type TEEExecAction struct {
     RegionID     string
     TxData       []byte
     UserSig      []byte
     EnclaveType  string    // "SGX" or "SEV"
     EnclaveID    []byte
-    ExecResult   []byte
+    ExecResult   TEEExecResult
     TEESig       []byte
     TimeStamps   []RoughtimeStamp
 }
@@ -41,7 +48,24 @@ func (t *TEEExecAction) Marshal(p *codec.Packer) {
     p.PackBytes(t.UserSig)
     p.PackString(t.EnclaveType)
     p.PackBytes(t.EnclaveID)
-    p.PackBytes(t.ExecResult)
+    
+    // Pack ExecResult
+    p.PackBytes(t.ExecResult.ContractAddr)
+    
+    // Pack Events
+    p.PackInt(len(t.ExecResult.Events))
+    for _, event := range t.ExecResult.Events {
+        eventBytes, _ := event.Marshal()
+        p.PackBytes(eventBytes)
+    }
+    
+    // Pack StateUpdates
+    p.PackInt(len(t.ExecResult.StateUpdates))
+    for key, value := range t.ExecResult.StateUpdates {
+        p.PackString(key)
+        p.PackBytes(value)
+    }
+    
     p.PackBytes(t.TEESig)
     
     // Pack TimeStamps
@@ -86,11 +110,48 @@ func UnmarshalTEEExecAction(p *codec.Packer) (*TEEExecAction, error) {
     }
     act.EnclaveID = enclaveID
 
-    execResult, err := p.UnpackBytes()
+    // Unpack ExecResult
+    contractAddr, err := p.UnpackBytes()
     if err != nil {
         return nil, err
     }
-    act.ExecResult = execResult
+    act.ExecResult.ContractAddr = contractAddr
+
+    // Unpack Events
+    eventCount, err := p.UnpackInt()
+    if err != nil {
+        return nil, err
+    }
+    act.ExecResult.Events = make([]events.Event, eventCount)
+    for i := 0; i < eventCount; i++ {
+        eventBytes, err := p.UnpackBytes()
+        if err != nil {
+            return nil, err
+        }
+        event := events.Event{}
+        if err := event.Unmarshal(eventBytes); err != nil {
+            return nil, err
+        }
+        act.ExecResult.Events[i] = event
+    }
+
+    // Unpack StateUpdates
+    updateCount, err := p.UnpackInt()
+    if err != nil {
+        return nil, err
+    }
+    act.ExecResult.StateUpdates = make(map[string][]byte, updateCount)
+    for i := 0; i < updateCount; i++ {
+        key, err := p.UnpackString()
+        if err != nil {
+            return nil, err
+        }
+        value, err := p.UnpackBytes()
+        if err != nil {
+            return nil, err
+        }
+        act.ExecResult.StateUpdates[key] = value
+    }
 
     teeSig, err := p.UnpackBytes()
     if err != nil {
@@ -175,23 +236,47 @@ func (t *TEEExecAction) Execute(ctx chain.Context) error {
         return ErrStaleTimeStamp
     }
 
-    // 6. Process execution result
-    if err := processExecResult(sm, t.RegionID, t.ExecResult); err != nil {
-        return err
+    // 6. Process state updates
+    for key, value := range t.ExecResult.StateUpdates {
+        stateKey := state.Key("state", t.RegionID, []byte(key))
+        if err := sm.Set(stateKey, value); err != nil {
+            return err
+        }
     }
 
-    // 7. Store transaction record
-    txKey := state.Key("tx", t.RegionID, hash(t.TxData))
-    return sm.Set(txKey, t.ExecResult)
+    // 7. Store events
+    for i, event := range t.ExecResult.Events {
+        eventKey := state.Key("event", t.RegionID, t.ExecResult.ContractAddr, uint64(i))
+        eventBytes, err := event.Marshal()
+        if err != nil {
+            return err
+        }
+        if err := sm.Set(eventKey, eventBytes); err != nil {
+            return err
+        }
+    }
+
+    return nil
 }
 
 func (t *TEEExecAction) StateKeys(chain.Auth) []string {
-    return []string{
+    keys := []string{
         state.Key("region", t.RegionID),
         state.Key("enclave", t.RegionID, t.EnclaveID),
         state.Key("enclave-pubkey", t.RegionID, t.EnclaveID),
-        state.Key("tx", t.RegionID, hash(t.TxData)),
     }
+
+    // Add state update keys
+    for key := range t.ExecResult.StateUpdates {
+        keys = append(keys, state.Key("state", t.RegionID, []byte(key)))
+    }
+
+    // Add event keys
+    for i := range t.ExecResult.Events {
+        keys = append(keys, state.Key("event", t.RegionID, t.ExecResult.ContractAddr, uint64(i)))
+    }
+
+    return keys
 }
 
 func (t *TEEExecAction) MaxUnits(chain.Auth) uint64 {
@@ -200,7 +285,7 @@ func (t *TEEExecAction) MaxUnits(chain.Auth) uint64 {
 
 // Helper functions
 
-func verifyTEESignature(result, sig, pubKey []byte, enclaveType string) bool {
+func verifyTEESignature(result TEEExecResult, sig, pubKey []byte, enclaveType string) bool {
     // Implement signature verification based on enclave type
     return true // placeholder
 }
@@ -238,15 +323,4 @@ func isTimeStampValid(stampTime, currentTime uint64) bool {
         diff = -diff
     }
     return diff <= maxDrift
-}
-
-func processExecResult(sm *state.Manager, regionID string, result []byte) error {
-    // Process and store state changes from execution result
-    // This would depend on your specific execution result format
-    return nil // placeholder
-}
-
-func hash(data []byte) []byte {
-    // Implement appropriate hashing function
-    return data // placeholder
 }
