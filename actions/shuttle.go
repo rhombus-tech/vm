@@ -197,7 +197,6 @@ func UnmarshalDeleteObject(p *codec.Packer) (chain.Action, error) {
 
 // SendEventAction represents an event being sent to an object
 type SendEventAction struct {
-    Priority      uint64 `json:"priority"`
     IDTo          string `json:"id_to"`
     FunctionCall  string `json:"function_call"`
     Parameters    []byte `json:"parameters"`
@@ -206,7 +205,6 @@ type SendEventAction struct {
 func (*SendEventAction) GetTypeID() uint8 { return SendEvent }
 
 func (a *SendEventAction) Marshal(p *codec.Packer) {
-    p.PackUint64(a.Priority)
     p.PackString(a.IDTo)
     p.PackString(a.FunctionCall)
     p.PackBytes(a.Parameters)
@@ -250,7 +248,6 @@ func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventR
     }
     
     event := map[string]interface{}{
-        "priority":      a.Priority,
         "function_call": a.FunctionCall,
         "parameters":    a.Parameters,
     }
@@ -260,7 +257,7 @@ func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventR
         return nil, err
     }
     
-    queueKey := []byte(fmt.Sprintf("event:%d:%s", a.Priority, a.IDTo))
+    queueKey := []byte(fmt.Sprintf("event:%s:%s", roughtime.Now(), a.IDTo))
     if err := vm.State().Set(ctx, queueKey, eventBytes); err != nil {
         return nil, err
     }
@@ -273,12 +270,6 @@ func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventR
 
 func UnmarshalSendEvent(p *codec.Packer) (chain.Action, error) {
     var act SendEventAction
-    
-    priority, err := p.UnpackUint64()
-    if err != nil {
-        return nil, err
-    }
-    act.Priority = priority
     
     idTo, err := p.UnpackString()
     if err != nil {
