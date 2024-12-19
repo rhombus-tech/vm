@@ -3,6 +3,8 @@
 package vm
 
 import (
+    "fmt"
+
     "github.com/ava-labs/avalanchego/utils/wrappers"
     "github.com/ava-labs/hypersdk/auth"
     "github.com/ava-labs/hypersdk/chain"
@@ -11,9 +13,9 @@ import (
     "github.com/ava-labs/hypersdk/vm"
     "github.com/ava-labs/hypersdk/vm/defaultvm"
 
-    "github.com/yourusername/shuttle/actions"
-    "github.com/yourusername/shuttle/consts"
-    "github.com/yourusername/shuttle/storage"
+    "github.com/rhombus-tech/vm/actions"
+    "github.com/rhombus-tech/vm/consts"
+    "github.com/rhombus-tech/vm/storage"
 )
 
 var (
@@ -32,8 +34,11 @@ func init() {
     errs.Add(
         // Register ShuttleVM actions
         ActionParser.Register(&actions.CreateObjectAction{}, nil),
-        ActionParser.Register(&actions.SendEventAction{}, nil),
+        ActionParser.Register(&actions.DeleteObjectAction{}, nil),
         ActionParser.Register(&actions.ChangeObjectCodeAction{}, nil),
+        ActionParser.Register(&actions.ChangeObjectStorageAction{}, nil),
+        ActionParser.Register(&actions.SetInputObjectAction{}, nil),
+        ActionParser.Register(&actions.SendEventAction{}, nil),
 
         // Register auth methods
         AuthParser.Register(&auth.ED25519{}, auth.UnmarshalED25519),
@@ -42,6 +47,10 @@ func init() {
 
         // Register output types (results from actions)
         OutputParser.Register(&actions.CreateObjectResult{}, nil),
+        OutputParser.Register(&actions.DeleteObjectResult{}, nil),
+        OutputParser.Register(&actions.ChangeObjectCodeResult{}, nil),
+        OutputParser.Register(&actions.ChangeObjectStorageResult{}, nil),
+        OutputParser.Register(&actions.SetInputObjectResult{}, nil),
         OutputParser.Register(&actions.SendEventResult{}, nil),
     )
     if errs.Errored() {
@@ -49,10 +58,52 @@ func init() {
     }
 }
 
+type Config struct {
+    SuperObjectID string
+    InputObjectID string
+}
+
 // With returns the ShuttleVM-specific options
 func With() vm.Option {
     return func(v *vm.VM) error {
-        // Add any ShuttleVM-specific initialization here
+        // Create default super object
+        ctx := v.Context()
+        superObject := map[string][]byte{
+            "id":   []byte("super"),
+            "code": []byte{}, // Implementation of super object methods
+        }
+        if err := storage.SetObject(ctx, v.State, "super", superObject); err != nil {
+            return fmt.Errorf("failed to create super object: %w", err)
+        }
+
+        // Set default input object
+        if err := storage.SetInputObject(ctx, v.State, "input"); err != nil {
+            return fmt.Errorf("failed to set input object: %w", err)
+        }
+
+        return nil
+    }
+}
+
+// WithConfig returns ShuttleVM options with custom configuration
+func WithConfig(config Config) vm.Option {
+    return func(v *vm.VM) error {
+        ctx := v.Context()
+
+        // Create super object with custom ID
+        superObject := map[string][]byte{
+            "id":   []byte(config.SuperObjectID),
+            "code": []byte{}, // Implementation of super object methods
+        }
+        if err := storage.SetObject(ctx, v.State, config.SuperObjectID, superObject); err != nil {
+            return fmt.Errorf("failed to create super object: %w", err)
+        }
+
+        // Set custom input object
+        if err := storage.SetInputObject(ctx, v.State, config.InputObjectID); err != nil {
+            return fmt.Errorf("failed to set input object: %w", err)
+        }
+
         return nil
     }
 }
@@ -60,6 +111,21 @@ func With() vm.Option {
 // NewWithOptions returns a VM with the specified options
 func New(options ...vm.Option) (*vm.VM, error) {
     options = append(options, With()) // Add ShuttleVM API
+    return defaultvm.New(
+        consts.Version,
+        genesis.DefaultGenesisFactory{},
+        &storage.StateManager{},
+        ActionParser,
+        AuthParser,
+        OutputParser,
+        auth.Engines(),
+        options...,
+    )
+}
+
+// NewWithConfig creates a new VM with custom configuration
+func NewWithConfig(config Config, options ...vm.Option) (*vm.VM, error) {
+    options = append(options, WithConfig(config)) // Add configured ShuttleVM API
     return defaultvm.New(
         consts.Version,
         genesis.DefaultGenesisFactory{},
