@@ -79,8 +79,6 @@ func (*StateManager) AddBalance(
     return err
 }
 
-// New ShuttleVM methods
-
 // GetObject retrieves an object from state
 func (*StateManager) GetObject(ctx context.Context, mu state.Immutable, id string) (map[string][]byte, error) {
     key := []byte(ObjectPrefix + id)
@@ -111,15 +109,9 @@ func (*StateManager) SetObject(ctx context.Context, mu state.Mutable, id string,
     return mu.SetValue(ctx, key, objBytes)
 }
 
-// DeleteObject removes an object from state
-func (*StateManager) DeleteObject(ctx context.Context, mu state.Mutable, id string) error {
-    key := []byte(ObjectPrefix + id)
-    return mu.DeleteValue(ctx, key)
-}
-
 // QueueEvent adds an event to the state
 func (*StateManager) QueueEvent(ctx context.Context, mu state.Mutable, event *actions.SendEventAction) error {
-    key := []byte(fmt.Sprintf("%s%d:%s", EventPrefix, event.Priority, event.IDTo))
+    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, roughtime.Now(), event.IDTo))
     
     eventData := map[string]interface{}{
         "function_call": event.FunctionCall,
