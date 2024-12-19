@@ -1,10 +1,12 @@
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
 package actions
 
 import (
     "context"
     "errors"
+    "fmt"
 
-    "github.com/ava-labs/avalanchego/ids"
     "github.com/ava-labs/hypersdk/chain"
     "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/consts"
@@ -72,6 +74,37 @@ func (a *CreateObjectAction) Verify(ctx context.Context, vm chain.VM) error {
     return nil
 }
 
+func (a *CreateObjectAction) Execute(ctx context.Context, vm chain.VM) (*CreateObjectResult, error) {
+    key := []byte("object:" + a.ID)
+    
+    exists, err := vm.State().Has(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if exists {
+        return nil, ErrObjectExists
+    }
+    
+    obj := map[string][]byte{
+        "code":    a.Code,
+        "storage": a.Storage,
+    }
+    
+    objBytes, err := codec.Marshal(obj)
+    if err != nil {
+        return nil, err
+    }
+    
+    err = vm.State().Set(ctx, key, objBytes)
+    if err != nil {
+        return nil, err
+    }
+    
+    return &CreateObjectResult{
+        ID: a.ID,
+    }, nil
+}
+
 func UnmarshalCreateObject(p *codec.Packer) (chain.Action, error) {
     var act CreateObjectAction
     id, err := p.UnpackString()
@@ -132,6 +165,43 @@ func (a *SendEventAction) Verify(ctx context.Context, vm chain.VM) error {
     }
 
     return nil
+}
+
+func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventResult, error) {
+    key := []byte("object:" + a.IDTo)
+    objBytes, err := vm.State().Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if objBytes == nil {
+        return nil, ErrObjectNotFound
+    }
+    
+    var obj map[string][]byte
+    if err := codec.Unmarshal(objBytes, &obj); err != nil {
+        return nil, err
+    }
+    
+    event := map[string]interface{}{
+        "priority":      a.Priority,
+        "function_call": a.FunctionCall,
+        "parameters":    a.Parameters,
+    }
+    
+    eventBytes, err := codec.Marshal(event)
+    if err != nil {
+        return nil, err
+    }
+    
+    queueKey := []byte(fmt.Sprintf("event:%d:%s", a.Priority, a.IDTo))
+    if err := vm.State().Set(ctx, queueKey, eventBytes); err != nil {
+        return nil, err
+    }
+    
+    return &SendEventResult{
+        Success: true,
+        IDTo:    a.IDTo,
+    }, nil
 }
 
 func UnmarshalSendEvent(p *codec.Packer) (chain.Action, error) {
@@ -199,6 +269,48 @@ func (a *ChangeObjectCodeAction) Verify(ctx context.Context, vm chain.VM) error 
     return nil
 }
 
+func (a *ChangeObjectCodeAction) Execute(ctx context.Context, vm chain.VM) (*ChangeObjectCodeResult, error) {
+    if err := verifySuperObjectCaller(ctx, vm); err != nil {
+        return &ChangeObjectCodeResult{
+            ID:      a.ID,
+            Success: false,
+        }, ErrUnauthorized
+    }
+    
+    key := []byte("object:" + a.ID)
+    objBytes, err := vm.State().Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if objBytes == nil {
+        return &ChangeObjectCodeResult{
+            ID:      a.ID,
+            Success: false,
+        }, ErrObjectNotFound
+    }
+    
+    var obj map[string][]byte
+    if err := codec.Unmarshal(objBytes, &obj); err != nil {
+        return nil, err
+    }
+    
+    obj["code"] = a.NewCode
+    
+    newObjBytes, err := codec.Marshal(obj)
+    if err != nil {
+        return nil, err
+    }
+    
+    if err := vm.State().Set(ctx, key, newObjBytes); err != nil {
+        return nil, err
+    }
+    
+    return &ChangeObjectCodeResult{
+        ID:      a.ID,
+        Success: true,
+    }, nil
+}
+
 func UnmarshalChangeObjectCode(p *codec.Packer) (chain.Action, error) {
     var act ChangeObjectCodeAction
     
@@ -217,7 +329,84 @@ func UnmarshalChangeObjectCode(p *codec.Packer) (chain.Action, error) {
     return &act, nil
 }
 
-// Helper functions for verification
+// Result types
+type CreateObjectResult struct {
+    ID string `json:"id"`
+}
+
+func (*CreateObjectResult) GetTypeID() uint8 { return CreateObject }
+
+func (r *CreateObjectResult) Marshal(p *codec.Packer) {
+    p.PackString(r.ID)
+}
+
+func UnmarshalCreateObjectResult(p *codec.Packer) (codec.Typed, error) {
+    var res CreateObjectResult
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    res.ID = id
+    return &res, nil
+}
+
+type SendEventResult struct {
+    Success bool   `json:"success"`
+    IDTo    string `json:"id_to"`
+}
+
+func (*SendEventResult) GetTypeID() uint8 { return SendEvent }
+
+func (r *SendEventResult) Marshal(p *codec.Packer) {
+    p.PackBool(r.Success)
+    p.PackString(r.IDTo)
+}
+
+func UnmarshalSendEventResult(p *codec.Packer) (codec.Typed, error) {
+    var res SendEventResult
+    success, err := p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    res.Success = success
+
+    idTo, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    res.IDTo = idTo
+    return &res, nil
+}
+
+type ChangeObjectCodeResult struct {
+    ID      string `json:"id"`
+    Success bool   `json:"success"`
+}
+
+func (*ChangeObjectCodeResult) GetTypeID() uint8 { return ChangeObjectCode }
+
+func (r *ChangeObjectCodeResult) Marshal(p *codec.Packer) {
+    p.PackString(r.ID)
+    p.PackBool(r.Success)
+}
+
+func UnmarshalChangeObjectCodeResult(p *codec.Packer) (codec.Typed, error) {
+    var res ChangeObjectCodeResult
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    res.ID = id
+
+    success, err := p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    res.Success = success
+    return &res, nil
+}
+
+// Helper functions
 func objectExists(ctx context.Context, vm chain.VM, id string) (bool, error) {
     key := []byte("object:" + id)
     return vm.State().Has(ctx, key)
@@ -225,19 +414,16 @@ func objectExists(ctx context.Context, vm chain.VM, id string) (bool, error) {
 
 func validateCode(code []byte) error {
     // Implement code validation logic
-    // This would check the bytecode format, security rules, etc.
     return nil
 }
 
 func validateFunctionExists(ctx context.Context, vm chain.VM, objectID, function string) error {
     // Implement function existence check
-    // This would verify the function exists in the object's code
     return nil
 }
 
 func verifySuperObjectCaller(ctx context.Context, vm chain.VM) error {
     // Implement super object verification
-    // This would check if the transaction signer is the super object
     return nil
 }
 
@@ -246,5 +432,4 @@ func RegisterActions(f *chain.AuthFactory) {
     f.Register(&CreateObjectAction{}, UnmarshalCreateObject)
     f.Register(&SendEventAction{}, UnmarshalSendEvent)
     f.Register(&ChangeObjectCodeAction{}, UnmarshalChangeObjectCode)
-    // Register other actions...
 }
