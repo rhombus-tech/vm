@@ -128,6 +128,73 @@ func UnmarshalCreateObject(p *codec.Packer) (chain.Action, error) {
     return &act, nil
 }
 
+// DeleteObjectAction removes an object from the VM
+type DeleteObjectAction struct {
+    ID string `json:"id"`
+}
+
+func (*DeleteObjectAction) GetTypeID() uint8 { return DeleteObject }
+
+func (a *DeleteObjectAction) Marshal(p *codec.Packer) {
+    p.PackString(a.ID)
+}
+
+func (a *DeleteObjectAction) Verify(ctx context.Context, vm chain.VM) error {
+    if len(a.ID) == 0 || len(a.ID) > 256 {
+        return ErrInvalidID
+    }
+
+    if exists, err := objectExists(ctx, vm, a.ID); err != nil {
+        return err
+    } else if !exists {
+        return ErrObjectNotFound
+    }
+
+    // Only super object can delete objects
+    if err := verifySuperObjectCaller(ctx, vm); err != nil {
+        return ErrUnauthorized
+    }
+
+    return nil
+}
+
+func (a *DeleteObjectAction) Execute(ctx context.Context, vm chain.VM) (*DeleteObjectResult, error) {
+    key := []byte("object:" + a.ID)
+    
+    exists, err := vm.State().Has(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if !exists {
+        return &DeleteObjectResult{
+            ID:      a.ID,
+            Success: false,
+        }, ErrObjectNotFound
+    }
+    
+    if err := vm.State().Remove(ctx, key); err != nil {
+        return &DeleteObjectResult{
+            ID:      a.ID,
+            Success: false,
+        }, err
+    }
+    
+    return &DeleteObjectResult{
+        ID:      a.ID,
+        Success: true,
+    }, nil
+}
+
+func UnmarshalDeleteObject(p *codec.Packer) (chain.Action, error) {
+    var act DeleteObjectAction
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    act.ID = id
+    return &act, nil
+}
+
 // SendEventAction represents an event being sent to an object
 type SendEventAction struct {
     Priority      uint64 `json:"priority"`
@@ -329,6 +396,147 @@ func UnmarshalChangeObjectCode(p *codec.Packer) (chain.Action, error) {
     return &act, nil
 }
 
+// ChangeObjectStorageAction changes an object's storage
+type ChangeObjectStorageAction struct {
+    ID         string `json:"id"`
+    NewStorage []byte `json:"new_storage"`
+}
+
+func (*ChangeObjectStorageAction) GetTypeID() uint8 { return ChangeObjectStorage }
+
+func (a *ChangeObjectStorageAction) Marshal(p *codec.Packer) {
+    p.PackString(a.ID)
+    p.PackBytes(a.NewStorage)
+}
+
+func (a *ChangeObjectStorageAction) Verify(ctx context.Context, vm chain.VM) error {
+    if len(a.ID) == 0 || len(a.ID) > 256 {
+        return ErrInvalidID
+    }
+
+    if exists, err := objectExists(ctx, vm, a.ID); err != nil {
+        return err
+    } else if !exists {
+        return ErrObjectNotFound
+    }
+
+    if len(a.NewStorage) > MaxStorageSize {
+        return ErrStorageTooLarge
+    }
+
+    return nil
+}
+
+func (a *ChangeObjectStorageAction) Execute(ctx context.Context, vm chain.VM) (*ChangeObjectStorageResult, error) {
+    key := []byte("object:" + a.ID)
+    
+    objBytes, err := vm.State().Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if objBytes == nil {
+        return &ChangeObjectStorageResult{
+            ID:      a.ID,
+            Success: false,
+        }, ErrObjectNotFound
+    }
+    
+    var obj map[string][]byte
+    if err := codec.Unmarshal(objBytes, &obj); err != nil {
+        return nil, err
+    }
+    
+    obj["storage"] = a.NewStorage
+    
+    newObjBytes, err := codec.Marshal(obj)
+    if err != nil {
+        return nil, err
+    }
+    
+    if err := vm.State().Set(ctx, key, newObjBytes); err != nil {
+        return nil, err
+    }
+    
+    return &ChangeObjectStorageResult{
+        ID:      a.ID,
+        Success: true,
+    }, nil
+}
+
+func UnmarshalChangeObjectStorage(p *codec.Packer) (chain.Action, error) {
+    var act ChangeObjectStorageAction
+    
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    act.ID = id
+    
+    newStorage, err := p.UnpackBytes()
+    if err != nil {
+        return nil, err
+    }
+    act.NewStorage = newStorage
+    
+    return &act, nil
+}
+
+// SetInputObjectAction designates the object that will receive extrinsics
+type SetInputObjectAction struct {
+    ID string `json:"id"`
+}
+
+func (*SetInputObjectAction) GetTypeID() uint8 { return SetInputObject }
+
+func (a *SetInputObjectAction) Marshal(p *codec.Packer) {
+    p.PackString(a.ID)
+}
+
+func (a *SetInputObjectAction) Verify(ctx context.Context, vm chain.VM) error {
+    if len(a.ID) == 0 || len(a.ID) > 256 {
+        return ErrInvalidID
+    }
+
+    if exists, err := objectExists(ctx, vm, a.ID); err != nil {
+        return err
+    } else if !exists {
+        return ErrObjectNotFound
+    }
+
+    // Only super object can set input object
+    if err := verifySuperObjectCaller(ctx, vm); err != nil {
+        return ErrUnauthorized
+    }
+
+    return nil
+}
+
+func (a *SetInputObjectAction) Execute(ctx context.Context, vm chain.VM) (*SetInputObjectResult, error) {
+    key := []byte("input_object")
+    
+    if err := vm.State().Set(ctx, key, []byte(a.ID)); err != nil {
+        return &SetInputObjectResult{
+            ID:      a.ID,
+            Success: false,
+        }, err
+    }
+    
+    return &SetInputObjectResult{
+        ID:      a.ID,
+        Success: true,
+    }, nil
+}
+
+func UnmarshalSetInputObject(p *codec.Packer) (chain.Action, error) {
+    var act SetInputObjectAction
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    act.ID = id
+    return &act, nil
+}
+
 // Result types
 type CreateObjectResult struct {
     ID string `json:"id"`
@@ -347,6 +555,34 @@ func UnmarshalCreateObjectResult(p *codec.Packer) (codec.Typed, error) {
         return nil, err
     }
     res.ID = id
+    return &res, nil
+}
+
+type DeleteObjectResult struct {
+    ID      string `json:"id"`
+    Success bool   `json:"success"`
+}
+
+func (*DeleteObjectResult) GetTypeID() uint8 { return DeleteObject }
+
+func (r *DeleteObjectResult) Marshal(p *codec.Packer) {
+    p.PackString(r.ID)
+    p.PackBool(r.Success)
+}
+
+func UnmarshalDeleteObjectResult(p *codec.Packer) (codec.Typed, error) {
+    var res DeleteObjectResult
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    res.ID = id
+
+    success, err := p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    res.Success = success
     return &res, nil
 }
 
@@ -406,6 +642,62 @@ func UnmarshalChangeObjectCodeResult(p *codec.Packer) (codec.Typed, error) {
     return &res, nil
 }
 
+type ChangeObjectStorageResult struct {
+    ID      string `json:"id"`
+    Success bool   `json:"success"`
+}
+
+func (*ChangeObjectStorageResult) GetTypeID() uint8 { return ChangeObjectStorage }
+
+func (r *ChangeObjectStorageResult) Marshal(p *codec.Packer) {
+    p.PackString(r.ID)
+    p.PackBool(r.Success)
+}
+
+func UnmarshalChangeObjectStorageResult(p *codec.Packer) (codec.Typed, error) {
+    var res ChangeObjectStorageResult
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    res.ID = id
+
+    success, err := p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    res.Success = success
+    return &res, nil
+}
+
+type SetInputObjectResult struct {
+    ID      string `json:"id"`
+    Success bool   `json:"success"`
+}
+
+func (*SetInputObjectResult) GetTypeID() uint8 { return SetInputObject }
+
+func (r *SetInputObjectResult) Marshal(p *codec.Packer) {
+    p.PackString(r.ID)
+    p.PackBool(r.Success)
+}
+
+func UnmarshalSetInputObjectResult(p *codec.Packer) (codec.Typed, error) {
+    var res SetInputObjectResult
+    id, err := p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    res.ID = id
+
+    success, err := p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    res.Success = success
+    return &res, nil
+}
+
 // Helper functions
 func objectExists(ctx context.Context, vm chain.VM, id string) (bool, error) {
     key := []byte("object:" + id)
@@ -430,6 +722,9 @@ func verifySuperObjectCaller(ctx context.Context, vm chain.VM) error {
 // RegisterActions registers all ShuttleVM actions with the auth factory
 func RegisterActions(f *chain.AuthFactory) {
     f.Register(&CreateObjectAction{}, UnmarshalCreateObject)
-    f.Register(&SendEventAction{}, UnmarshalSendEvent)
+    f.Register(&DeleteObjectAction{}, UnmarshalDeleteObject)
     f.Register(&ChangeObjectCodeAction{}, UnmarshalChangeObjectCode)
+    f.Register(&ChangeObjectStorageAction{}, UnmarshalChangeObjectStorage)
+    f.Register(&SetInputObjectAction{}, UnmarshalSetInputObject)
+    f.Register(&SendEventAction{}, UnmarshalSendEvent)
 }
