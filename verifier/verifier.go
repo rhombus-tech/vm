@@ -130,3 +130,82 @@ func (v *StateVerifier) verifyFunctionExists(obj map[string][]byte, function str
     // Implementation would check if the function exists in the object's code
     return nil
 }
+
+// New verifier methods for region actions
+func (v *StateVerifier) VerifyCreateRegion(ctx context.Context, action *actions.CreateRegionAction) error {
+   // Verify region doesn't already exist
+   region, err := storage.GetRegion(ctx, v.state, action.RegionID)
+   if err != nil {
+       return err
+   }
+   if region != nil {
+       return actions.ErrRegionExists
+   }
+
+   // Verify TEE list is valid
+   if len(action.TEEs) == 0 {
+       return actions.ErrInvalidTEE
+   }
+   for _, tee := range action.TEEs {
+       if len(tee) == 0 {
+           return actions.ErrInvalidTEE
+       }
+       // Could add more TEE validation here
+   }
+
+   return nil
+}
+
+func (v *StateVerifier) VerifyUpdateRegion(ctx context.Context, action *actions.UpdateRegionAction) error {
+   // Verify region exists
+   region, err := storage.GetRegion(ctx, v.state, action.RegionID)
+   if err != nil {
+       return err
+   }
+   if region == nil {
+       return actions.ErrRegionNotFound
+   }
+
+   // Verify TEE lists are valid
+   if len(action.AddTEEs) == 0 && len(action.RemTEEs) == 0 {
+       return actions.ErrInvalidTEE
+   }
+
+   // Verify new TEEs
+   for _, tee := range action.AddTEEs {
+       if len(tee) == 0 {
+           return actions.ErrInvalidTEE
+       }
+       // Could add more TEE validation here
+   }
+
+   // Verify TEEs to remove exist in current list
+   currentTEEs := region["tees"].([]actions.TEEAddress)
+   for _, remTEE := range action.RemTEEs {
+       found := false
+       for _, tee := range currentTEEs {
+           if bytes.Equal(tee, remTEE) {
+               found = true
+               break
+           }
+       }
+       if !found {
+           return actions.ErrInvalidTEE
+       }
+   }
+
+   return nil
+}
+
+// Update VerifyStateTransition to include region actions
+func (v *StateVerifier) VerifyStateTransition(ctx context.Context, action chain.Action) error {
+   switch a := action.(type) {
+   // Existing cases...
+   case *actions.CreateRegionAction:
+       return v.VerifyCreateRegion(ctx, a)
+   case *actions.UpdateRegionAction:
+       return v.VerifyUpdateRegion(ctx, a)
+   default:
+       return fmt.Errorf("unknown action type: %T", action)
+   }
+}
