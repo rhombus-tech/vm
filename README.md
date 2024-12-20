@@ -12,7 +12,6 @@ ShuttleVM consists of:
 - Objects communicate through events
 
 2. Event System
-- Priority-based event queue
 - Events trigger object functions
 - Regional execution via ping-pong protocol
 
