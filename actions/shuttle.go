@@ -10,6 +10,7 @@ import (
     "github.com/ava-labs/hypersdk/chain"
     "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/consts"
+    "github.com/cloudflare/roughtime"
 )
 
 var (
