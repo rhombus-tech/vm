@@ -31,7 +31,6 @@ ShuttleVM supports three fundamental actions:
 
 2. `SendEventAction`
 - Send events between objects
-- Queue management with priorities
 - Event parameter handling
 
 3. `SetInputObjectAction`
