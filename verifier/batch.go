@@ -28,12 +28,14 @@ type BatchVerifier struct {
    verifier *StateVerifier
    
    // Track object modifications within batch
+   regionModifications map[string]modificationInfo
    objectModifications map[string]modificationInfo
    eventQueue         map[string][]eventInfo
 }
 
 type modificationInfo struct {
    created bool
+   teeUpdated bool
 }
 
 type eventInfo struct {
@@ -44,6 +46,7 @@ type eventInfo struct {
 func NewBatchVerifier(state state.Mutable) *BatchVerifier {
    return &BatchVerifier{
        verifier:            New(state),
+       regionModifications: make(map[string]modificationInfo),
        objectModifications: make(map[string]modificationInfo),
        eventQueue:         make(map[string][]eventInfo),
    }
@@ -56,6 +59,7 @@ func (bv *BatchVerifier) VerifyBatch(ctx context.Context, actions []chain.Action
    }
 
    // Reset tracking maps
+   bv.regionModifications = make(map[string]modificationInfo)
    bv.objectModifications = make(map[string]modificationInfo)
    bv.eventQueue = make(map[string][]eventInfo)
 
@@ -107,9 +111,51 @@ func (bv *BatchVerifier) analyzeActions(ctx context.Context, actions []chain.Act
                return ErrConflictingAction
            }
        }
+
+      case *actions.CreateRegionAction:
+           if info, exists := bv.regionModifications[a.RegionID]; exists {
+               if info.created {
+                   return ErrDuplicateAction
+               }
+           }
+           bv.regionModifications[a.RegionID] = modificationInfo{created: true}
+
+       case *actions.UpdateRegionAction:
+           if info, exists := bv.regionModifications[a.RegionID]; exists {
+               if info.teeUpdated {
+                   return ErrDuplicateAction
+               }
+               if info.created {
+                   return ErrConflictingAction
+               }
+           }
+           bv.regionModifications[a.RegionID] = modificationInfo{teeUpdated: true}
+       }
    }
    return nil
 }
+
+// Add verification methods
+func (bv *BatchVerifier) verifyCreateRegionInBatch(ctx context.Context, action *actions.CreateRegionAction) error {
+   // Verify no conflicts with other region actions
+   if info, exists := bv.regionModifications[action.RegionID]; exists {
+       if info.teeUpdated {
+           return ErrConflictingAction
+       }
+   }
+   return nil
+}
+
+func (bv *BatchVerifier) verifyUpdateRegionInBatch(ctx context.Context, action *actions.UpdateRegionAction) error {
+   // Verify region isn't being created in this batch
+   if info, exists := bv.regionModifications[action.RegionID]; exists {
+       if info.created {
+           return ErrConflictingAction
+       }
+   }
+   return nil
+}
+
 
 // verifyAction verifies an individual action within the batch context
 func (bv *BatchVerifier) verifyAction(ctx context.Context, action chain.Action) error {
@@ -126,6 +172,10 @@ func (bv *BatchVerifier) verifyAction(ctx context.Context, action chain.Action) 
        return bv.verifyEventInBatch(ctx, a)
    case *actions.SetInputObjectAction:
        return bv.verifySetInputInBatch(ctx, a)
+   case *actions.CreateRegionAction:
+       return bv.verifyCreateRegionInBatch(ctx, a)
+   case *actions.UpdateRegionAction:
+       return bv.verifyUpdateRegionInBatch(ctx, a)
    }
 
    return nil
@@ -176,3 +226,5 @@ func (bv *BatchVerifier) verifyEventOrdering(ctx context.Context) error {
    }
    return nil
 }
+
+
