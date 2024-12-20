@@ -17,6 +17,7 @@ const (
     ObjectPrefix = "object:"
     EventPrefix  = "event:"
     InputObject  = "input_object"
+    RegionPrefix = "region:"
 )
 
 var _ (chain.StateManager) = (*StateManager)(nil)
@@ -149,12 +150,48 @@ func (*StateManager) ObjectExists(ctx context.Context, im state.Immutable, id st
     return im.HasValue(ctx, key)
 }
 
+// GetRegion retrieves a region from state
+func (*StateManager) GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]interface{}, error) {
+    key := []byte(RegionPrefix + id)
+    regionBytes, err := im.GetValue(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if regionBytes == nil {
+        return nil, nil
+    }
+
+    var region map[string]interface{}
+    if err := codec.Unmarshal(regionBytes, &region); err != nil {
+        return nil, err
+    }
+    return region, nil
+}
+
+// SetRegion stores a region in state
+func (*StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error {
+    key := []byte(RegionPrefix + id)
+    regionBytes, err := codec.Marshal(region)
+    if err != nil {
+        return err
+    }
+    return mu.SetValue(ctx, key, regionBytes)
+}
+
+// RegionExists checks if a region exists
+func (*StateManager) RegionExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
+    key := []byte(RegionPrefix + id)
+    return im.HasValue(ctx, key)
+}
+
+
 // Additional state keys for ShuttleVM actions
 func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
     keys := state.Keys{
         string([]byte(ObjectPrefix + id)): state.Read | state.Write,
         string([]byte(EventPrefix + id)): state.Read | state.Write,
         string([]byte(InputObject)): state.Read | state.Write,
+        string([]byte(RegionPrefix + id)): state.Read | state.Write,  // Add this
     }
     return keys
 }
