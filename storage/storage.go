@@ -43,6 +43,9 @@ const (
    objectPrefix    = 0x4
    eventPrefix     = 0x5
    inputPrefix     = 0x6
+
+   //Region
+   regionPrefix = 0x7
 )
 
 const BalanceChunks uint16 = 1
@@ -295,4 +298,28 @@ func SetInputObject(
 ) error {
    k := InputObjectKey()
    return mu.Insert(ctx, k, []byte(id))
+}
+
+func RegionKey(id string) []byte {
+    k := make([]byte, 1+len(id))
+    k[0] = regionPrefix
+    copy(k[1:], []byte(id))
+    return k
+}
+
+func GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]interface{}, error) {
+    k := RegionKey(id)
+    v, err := im.GetValue(ctx, k)
+    if errors.Is(err, database.ErrNotFound) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+
+    var region map[string]interface{}
+    if err := codec.Unmarshal(v, &region); err != nil {
+        return nil, err
+    }
+    return region, nil
 }
