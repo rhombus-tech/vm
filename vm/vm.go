@@ -16,6 +16,7 @@ import (
    "github.com/rhombus-tech/vm/actions"
    "github.com/rhombus-tech/vm/consts"
    "github.com/rhombus-tech/vm/storage"
+   "github.com/cloudflare/roughtime"
 )
 
 var (
@@ -28,28 +29,29 @@ var (
 func init() {
    ActionParser = codec.NewTypeParser[chain.Action]()
    AuthParser = codec.NewTypeParser[chain.Auth]()
-   OutputParser = codec.NewTypeParser[codec.Typed]()
+   OutputParser = codec.TypeParser[codec.Typed]()
    
    errs := &wrappers.Errs{}
    errs.Add(
-       // Register ShuttleVM actions
-       ActionParser.Register(&actions.CreateObjectAction{}, nil),
-       ActionParser.Register(&actions.SendEventAction{}, nil),
-       ActionParser.Register(&actions.SetInputObjectAction{}, nil),
-       ActionParser.Register(&actions.CreateRegionAction{}, nil),
-       ActionParser.Register(&actions.UpdateRegionAction{}, nil),
+       // Register ShuttleVM actions with TEE attestations
+       ActionParser.Register(&actions.CreateObjectAction{}, actions.UnmarshalCreateObject),
+       ActionParser.Register(&actions.SendEventAction{}, actions.UnmarshalSendEvent),
+       ActionParser.Register(&actions.SetInputObjectAction{}, actions.UnmarshalSetInputObject),
+       ActionParser.Register(&actions.CreateRegionAction{}, actions.UnmarshalCreateRegion),
+       ActionParser.Register(&actions.UpdateRegionAction{}, actions.UnmarshalUpdateRegion),
+       ActionParser.Register(&actions.TEEAttestation{}, actions.UnmarshalTEEAttestation),
 
-       // Register auth methods
+       // Register auth methods for transaction signatures
        AuthParser.Register(&auth.ED25519{}, auth.UnmarshalED25519),
        AuthParser.Register(&auth.SECP256R1{}, auth.UnmarshalSECP256R1),
        AuthParser.Register(&auth.BLS{}, auth.UnmarshalBLS),
 
-       // Register output types (results from actions)
-       OutputParser.Register(&actions.CreateObjectResult{}, nil),
-       OutputParser.Register(&actions.SendEventResult{}, nil),
-       OutputParser.Register(&actions.SetInputObjectResult{}, nil),
-       OutputParser.Register(&actions.CreateRegionResult{}, nil),
-       OutputParser.Register(&actions.UpdateRegionResult{}, nil),
+       // Register output types with TEE attestation results
+       OutputParser.Register(&actions.CreateObjectResult{}, actions.UnmarshalCreateObjectResult),
+       OutputParser.Register(&actions.SendEventResult{}, actions.UnmarshalSendEventResult),
+       OutputParser.Register(&actions.SetInputObjectResult{}, actions.UnmarshalSetInputObjectResult),
+       OutputParser.Register(&actions.CreateRegionResult{}, actions.UnmarshalCreateRegionResult),
+       OutputParser.Register(&actions.UpdateRegionResult{}, actions.UnmarshalUpdateRegionResult),
    )
    if errs.Errored() {
        panic(errs.Err)
@@ -60,10 +62,15 @@ type Config struct {
    InputObjectID string
 }
 
-// With returns the ShuttleVM-specific options
+// With returns the ShuttleVM-specific options with TEE support
 func With() vm.Option {
    return func(v *vm.VM) error {
        ctx := v.Context()
+
+       // Verify Roughtime server availability
+       if _, err := roughtime.Now(); err != nil {
+           return fmt.Errorf("failed to initialize Roughtime: %w", err)
+       }
        
        // Set default input object
        if err := storage.SetInputObject(ctx, v.State, "input"); err != nil {
@@ -78,6 +85,11 @@ func With() vm.Option {
 func WithConfig(config Config) vm.Option {
    return func(v *vm.VM) error {
        ctx := v.Context()
+
+       // Verify Roughtime server availability
+       if _, err := roughtime.Now(); err != nil {
+           return fmt.Errorf("failed to initialize Roughtime: %w", err)
+       }
 
        // Set custom input object
        if err := storage.SetInputObject(ctx, v.State, config.InputObjectID); err != nil {
