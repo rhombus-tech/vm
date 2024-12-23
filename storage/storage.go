@@ -278,6 +278,28 @@ func QueueEvent(
     return mu.Insert(ctx, k, v)
 }
 
+func GetEvent(
+   ctx context.Context,
+   im state.Immutable,
+   timestamp string,
+   id string,
+) (map[string]interface{}, error) {
+   k := EventKey(timestamp, id)
+   v, err := im.GetValue(ctx, k)
+   if errors.Is(err, database.ErrNotFound) {
+       return nil, nil
+   }
+   if err != nil {
+       return nil, err
+   }
+
+   var event map[string]interface{}
+   if err := codec.Unmarshal(v, &event); err != nil {
+       return nil, err
+   }
+   return event, nil
+}
+
 func GetInputObject(
    ctx context.Context,
    im state.Immutable,
@@ -324,4 +346,18 @@ func GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]i
         return nil, err
     }
     return region, nil
+}
+
+func SetRegion(
+   ctx context.Context,
+   mu state.Mutable,
+   id string,
+   region map[string]interface{},
+) error {
+   k := RegionKey(id)
+   v, err := codec.Marshal(region)
+   if err != nil {
+       return err
+   }
+   return mu.Insert(ctx, k, v)
 }
