@@ -211,11 +211,11 @@ func ObjectKey(id string) []byte {
 }
 
 func EventKey(timestamp string, id string) []byte {
-   k := make([]byte, 1+len(timestamp)+len(id))
-   k[0] = eventPrefix
-   copy(k[1:], []byte(timestamp))
-   copy(k[1+len(timestamp):], []byte(id))
-   return k
+    k := make([]byte, 1+len(timestamp)+len(id))
+    k[0] = eventPrefix
+    copy(k[1:], []byte(timestamp))
+    copy(k[1+len(timestamp):], []byte(id))
+    return k
 }
 
 func InputObjectKey() []byte {
@@ -258,22 +258,24 @@ func SetObject(
 }
 
 func QueueEvent(
-   ctx context.Context,
-   mu state.Mutable,
-   id string,
-   functionCall string,
-   parameters []byte,
+    ctx context.Context,
+    mu state.Mutable,
+    id string,
+    functionCall string,
+    parameters []byte,
+    attestations [2]actions.TEEAttestation,
 ) error {
-   k := EventKey(roughtime.Now(), id)
-   event := map[string]interface{}{
-       "function_call": functionCall,
-       "parameters":    parameters,
-   }
-   v, err := codec.Marshal(event)
-   if err != nil {
-       return err
-   }
-   return mu.Insert(ctx, k, v)
+    k := EventKey(attestations[0].Timestamp, id)
+    event := map[string]interface{}{
+        "function_call": functionCall,
+        "parameters":    parameters,
+        "attestations": attestations,
+    }
+    v, err := codec.Marshal(event)
+    if err != nil {
+        return err
+    }
+    return mu.Insert(ctx, k, v)
 }
 
 func GetInputObject(
