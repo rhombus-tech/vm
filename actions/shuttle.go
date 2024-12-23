@@ -3,32 +3,90 @@
 package actions
 
 import (
-    "context"
-    "errors"
-    "fmt"
+   "context"
+   "errors"
+   "fmt"
 
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/consts"
-    "github.com/cloudflare/roughtime"
+   "github.com/ava-labs/hypersdk/chain"
+   "github.com/ava-labs/hypersdk/codec"
+   "github.com/ava-labs/hypersdk/consts"
+   "github.com/cloudflare/roughtime"
 )
 
 var (
-    ErrObjectExists    = errors.New("object already exists")
-    ErrObjectNotFound  = errors.New("object not found")
-    ErrInvalidID       = errors.New("invalid object ID")
-    ErrInvalidFunction = errors.New("invalid function call")
-    ErrCodeTooLarge    = errors.New("code size exceeds maximum")
-    ErrStorageTooLarge = errors.New("storage size exceeds maximum")
-    
-    MaxCodeSize    = 1024 * 1024    // 1MB
-    MaxStorageSize = 1024 * 1024    // 1MB
+   ErrObjectExists    = errors.New("object already exists")
+   ErrObjectNotFound  = errors.New("object not found")
+   ErrInvalidID       = errors.New("invalid object ID")
+   ErrInvalidFunction = errors.New("invalid function call")
+   ErrCodeTooLarge    = errors.New("code size exceeds maximum")  
+   ErrStorageTooLarge = errors.New("storage size exceeds maximum")
+   
+   // New attestation errors
+   ErrMissingAttestation = errors.New("missing TEE attestation")
+   ErrInvalidAttestation = errors.New("invalid TEE attestation")
+   ErrAttestationMismatch = errors.New("attestation pair mismatch")
+   
+   MaxCodeSize    = 1024 * 1024    // 1MB
+   MaxStorageSize = 1024 * 1024    // 1MB
 )
 
+// New attestation types
+type TEEAttestation struct {
+   EnclaveID    []byte
+   Measurement  []byte 
+   Timestamp    string
+   Data         []byte
+   Signature    []byte
+}
+
+func (a *TEEAttestation) Marshal(p *codec.Packer) {
+   p.PackBytes(a.EnclaveID)
+   p.PackBytes(a.Measurement)
+   p.PackString(a.Timestamp)
+   p.PackBytes(a.Data)
+   p.PackBytes(a.Signature)
+}
+
+func UnmarshalAttestation(p *codec.Packer) (TEEAttestation, error) {
+   var att TEEAttestation
+   
+   enclaveID, err := p.UnpackBytes()
+   if err != nil {
+       return att, err
+   }
+   att.EnclaveID = enclaveID
+   
+   measurement, err := p.UnpackBytes() 
+   if err != nil {
+       return att, err
+   }
+   att.Measurement = measurement
+   
+   timestamp, err := p.UnpackString()
+   if err != nil {
+       return att, err
+   }
+   att.Timestamp = timestamp
+   
+   data, err := p.UnpackBytes()
+   if err != nil {
+       return att, err
+   }
+   att.Data = data
+   
+   sig, err := p.UnpackBytes()
+   if err != nil {
+       return att, err
+   }
+   att.Signature = sig
+   
+   return att, nil
+}
+
 const (
-    CreateObject uint8 = iota
-    SendEvent
-    SetInputObject
+   CreateObject uint8 = iota
+   SendEvent
+   SetInputObject
 )
 
 type CreateObjectAction struct {
@@ -106,80 +164,130 @@ type SendEventAction struct {
     IDTo         string `json:"id_to"`
     FunctionCall string `json:"function_call"`
     Parameters   []byte `json:"parameters"`
+    Attestations  [2]TEEAttestation // Paired TEE attestations
 }
 
 func (*SendEventAction) GetTypeID() uint8 { return SendEvent }
 
 func (a *SendEventAction) Marshal(p *codec.Packer) {
-    p.PackString(a.IDTo)
-    p.PackString(a.FunctionCall)
-    p.PackBytes(a.Parameters)
+   p.PackString(a.IDTo)
+   p.PackString(a.FunctionCall)
+   p.PackBytes(a.Parameters)
+   a.Attestations[0].Marshal(p)
+   a.Attestations[1].Marshal(p)
 }
 
 func UnmarshalSendEvent(p *codec.Packer) (chain.Action, error) {
-    var act SendEventAction
-    
-    idTo, err := p.UnpackString()
-    if err != nil {
-        return nil, err
-    }
-    act.IDTo = idTo
-    
-    functionCall, err := p.UnpackString()
-    if err != nil {
-        return nil, err
-    }
-    act.FunctionCall = functionCall
-    
-    parameters, err := p.UnpackBytes()
-    if err != nil {
-        return nil, err
-    }
-    act.Parameters = parameters
-    
-    return &act, nil
+   var act SendEventAction
+   
+   idTo, err := p.UnpackString()
+   if err != nil {
+       return nil, err
+   }
+   act.IDTo = idTo
+   
+   functionCall, err := p.UnpackString()
+   if err != nil {
+       return nil, err
+   }
+   act.FunctionCall = functionCall
+   
+   parameters, err := p.UnpackBytes()
+   if err != nil {
+       return nil, err
+   }
+   act.Parameters = parameters
+   
+   att0, err := UnmarshalAttestation(p)
+   if err != nil {
+       return nil, err
+   }
+   act.Attestations[0] = att0
+   
+   att1, err := UnmarshalAttestation(p)
+   if err != nil {
+       return nil, err
+   }
+   act.Attestations[1] = att1
+   
+   return &act, nil
 }
 
 func (a *SendEventAction) Verify(ctx context.Context, vm chain.VM) error {
-    if exists, err := objectExists(ctx, vm, a.IDTo); err != nil {
-        return err
-    } else if !exists {
-        return ErrObjectNotFound
-    }
-    if len(a.FunctionCall) == 0 || len(a.FunctionCall) > 256 {
-        return ErrInvalidFunction
-    }
-    if len(a.Parameters) > MaxStorageSize {
-        return ErrStorageTooLarge
-    }
-    return validateFunctionExists(ctx, vm, a.IDTo, a.FunctionCall)
+   // Original verification
+   if exists, err := objectExists(ctx, vm, a.IDTo); err != nil {
+       return err
+   } else if !exists {
+       return ErrObjectNotFound
+   }
+   if len(a.FunctionCall) == 0 || len(a.FunctionCall) > 256 {
+       return ErrInvalidFunction
+   }
+   if len(a.Parameters) > MaxStorageSize {
+       return ErrStorageTooLarge
+   }
+
+   // Attestation verification
+   if err := verifyAttestationPair(a.Attestations); err != nil {
+       return err
+   }
+
+   return validateFunctionExists(ctx, vm, a.IDTo, a.FunctionCall)
+}
+
+func verifyAttestationPair(attestations [2]TEEAttestation) error {
+   // Verify both attestations exist
+   if len(attestations[0].EnclaveID) == 0 || len(attestations[1].EnclaveID) == 0 {
+       return ErrMissingAttestation
+   }
+
+   // Verify timestamps match
+   if attestations[0].Timestamp != attestations[1].Timestamp {
+       return ErrAttestationMismatch
+   }
+
+   // Verify results match
+   if !bytes.Equal(attestations[0].Data, attestations[1].Data) {
+       return ErrAttestationMismatch
+   }
+
+   // Additional TEE-specific verification would happen in external TEE validation code
+
+   return nil
 }
 
 func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventResult, error) {
-    key := []byte("object:" + a.IDTo)
-    objBytes, err := vm.State().Get(ctx, key)
-    if err != nil {
-        return nil, err
-    }
-    if objBytes == nil {
-        return nil, ErrObjectNotFound
-    }
-    
-    event := map[string]interface{}{
-        "function_call": a.FunctionCall,
-        "parameters":    a.Parameters,
-    }
-    eventBytes, err := codec.Marshal(event)
-    if err != nil {
-        return nil, err
-    }
-    
-    queueKey := []byte(fmt.Sprintf("event:%s:%s", roughtime.Now(), a.IDTo))
-    if err := vm.State().Set(ctx, queueKey, eventBytes); err != nil {
-        return nil, err
-    }
-    
-    return &SendEventResult{Success: true, IDTo: a.IDTo}, nil
+   key := []byte("object:" + a.IDTo)
+   objBytes, err := vm.State().Get(ctx, key)
+   if err != nil {
+       return nil, err
+   }
+   if objBytes == nil {
+       return nil, ErrObjectNotFound
+   }
+   
+   event := map[string]interface{}{
+       "function_call": a.FunctionCall,
+       "parameters":    a.Parameters,
+       "attestations": a.Attestations,
+   }
+   
+   eventBytes, err := codec.Marshal(event)
+   if err != nil {
+       return nil, err
+   }
+   
+   queueKey := []byte(fmt.Sprintf("event:%s:%s", a.Attestations[0].Timestamp, a.IDTo))
+   if err := vm.State().Set(ctx, queueKey, eventBytes); err != nil {
+       return nil, err
+   }
+   
+   return &SendEventResult{
+       Success: true,
+       IDTo:    a.IDTo,
+       StateHash: a.Attestations[0].Data,
+       Timestamp: a.Attestations[0].Timestamp,
+   }, nil
 }
 
 type SetInputObjectAction struct {
