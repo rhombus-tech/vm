@@ -17,6 +17,8 @@ var (
    ErrBatchLimit        = errors.New("batch size exceeds limit")
    ErrDuplicateAction   = errors.New("duplicate action in batch")
    ErrConflictingAction = errors.New("conflicting actions in batch")
+   ErrInvalidTimestamp  = errors.New("invalid timestamp ordering")
+   ErrDuplicateAttestation = errors.New("duplicate attestation in batch")
 )
 
 const (
@@ -27,10 +29,11 @@ const (
 type BatchVerifier struct {
    verifier *StateVerifier
    
-   // Track object modifications within batch
+   // Track modifications within batch
    regionModifications map[string]modificationInfo
    objectModifications map[string]modificationInfo
    eventQueue         map[string][]eventInfo
+   attestationsSeen   map[string]bool // Track attestations by TEE ID + timestamp
 }
 
 type modificationInfo struct {
@@ -41,6 +44,7 @@ type modificationInfo struct {
 type eventInfo struct {
    timestamp    string
    functionCall string
+   attestations [2]actions.TEEAttestation
 }
 
 func NewBatchVerifier(state state.Mutable) *BatchVerifier {
@@ -49,6 +53,7 @@ func NewBatchVerifier(state state.Mutable) *BatchVerifier {
        regionModifications: make(map[string]modificationInfo),
        objectModifications: make(map[string]modificationInfo),
        eventQueue:         make(map[string][]eventInfo),
+       attestationsSeen:   make(map[string]bool),
    }
 }
 
@@ -62,6 +67,7 @@ func (bv *BatchVerifier) VerifyBatch(ctx context.Context, actions []chain.Action
    bv.regionModifications = make(map[string]modificationInfo)
    bv.objectModifications = make(map[string]modificationInfo)
    bv.eventQueue = make(map[string][]eventInfo)
+   bv.attestationsSeen = make(map[string]bool)
 
    // First pass: collect all modifications and check for conflicts
    if err := bv.analyzeActions(ctx, actions); err != nil {
@@ -92,32 +98,49 @@ func (bv *BatchVerifier) analyzeActions(ctx context.Context, actions []chain.Act
 
        case *actions.SendEventAction:
            events := bv.eventQueue[a.IDTo]
-           // Check for duplicate events with same timestamp
-           timestamp := roughtime.Now()
-           for _, event := range events {
-               if event.timestamp == timestamp {
-                   return ErrDuplicateAction
+           
+           // Verify attestations haven't been used before
+           for _, att := range a.Attestations {
+               attID := fmt.Sprintf("%x:%s", att.EnclaveID, att.Timestamp)
+               if bv.attestationsSeen[attID] {
+                   return ErrDuplicateAttestation
                }
+               bv.attestationsSeen[attID] = true
            }
+
+           // Check timestamp ordering
+           if len(events) > 0 && a.Attestations[0].Timestamp <= events[len(events)-1].timestamp {
+               return ErrInvalidTimestamp
+           }
+
            events = append(events, eventInfo{
-               timestamp:    timestamp,
+               timestamp:    a.Attestations[0].Timestamp,
                functionCall: a.FunctionCall,
+               attestations: a.Attestations,
            })
            bv.eventQueue[a.IDTo] = events
            
        case *actions.SetInputObjectAction:
-           // Verify no conflicts with other actions
            if info, exists := bv.objectModifications[a.ID]; exists && !info.created {
                return ErrConflictingAction
            }
-       }
 
-      case *actions.CreateRegionAction:
+       case *actions.CreateRegionAction:
            if info, exists := bv.regionModifications[a.RegionID]; exists {
                if info.created {
                    return ErrDuplicateAction
                }
            }
+           
+           // Verify region attestations
+           for _, att := range a.Attestations {
+               attID := fmt.Sprintf("%x:%s", att.EnclaveID, att.Timestamp)
+               if bv.attestationsSeen[attID] {
+                   return ErrDuplicateAttestation
+               }
+               bv.attestationsSeen[attID] = true
+           }
+           
            bv.regionModifications[a.RegionID] = modificationInfo{created: true}
 
        case *actions.UpdateRegionAction:
@@ -129,33 +152,21 @@ func (bv *BatchVerifier) analyzeActions(ctx context.Context, actions []chain.Act
                    return ErrConflictingAction
                }
            }
+           
+           // Verify region attestations
+           for _, att := range a.Attestations {
+               attID := fmt.Sprintf("%x:%s", att.EnclaveID, att.Timestamp)
+               if bv.attestationsSeen[attID] {
+                   return ErrDuplicateAttestation
+               }
+               bv.attestationsSeen[attID] = true
+           }
+           
            bv.regionModifications[a.RegionID] = modificationInfo{teeUpdated: true}
        }
    }
    return nil
 }
-
-// Add verification methods
-func (bv *BatchVerifier) verifyCreateRegionInBatch(ctx context.Context, action *actions.CreateRegionAction) error {
-   // Verify no conflicts with other region actions
-   if info, exists := bv.regionModifications[action.RegionID]; exists {
-       if info.teeUpdated {
-           return ErrConflictingAction
-       }
-   }
-   return nil
-}
-
-func (bv *BatchVerifier) verifyUpdateRegionInBatch(ctx context.Context, action *actions.UpdateRegionAction) error {
-   // Verify region isn't being created in this batch
-   if info, exists := bv.regionModifications[action.RegionID]; exists {
-       if info.created {
-           return ErrConflictingAction
-       }
-   }
-   return nil
-}
-
 
 // verifyAction verifies an individual action within the batch context
 func (bv *BatchVerifier) verifyAction(ctx context.Context, action chain.Action) error {
@@ -205,6 +216,24 @@ func (bv *BatchVerifier) verifySetInputInBatch(ctx context.Context, action *acti
    return nil
 }
 
+func (bv *BatchVerifier) verifyCreateRegionInBatch(ctx context.Context, action *actions.CreateRegionAction) error {
+   if info, exists := bv.regionModifications[action.RegionID]; exists {
+       if info.teeUpdated {
+           return ErrConflictingAction
+       }
+   }
+   return nil
+}
+
+func (bv *BatchVerifier) verifyUpdateRegionInBatch(ctx context.Context, action *actions.UpdateRegionAction) error {
+   if info, exists := bv.regionModifications[action.RegionID]; exists {
+       if info.created {
+           return ErrConflictingAction
+       }
+   }
+   return nil
+}
+
 func (bv *BatchVerifier) verifyBatchConstraints(ctx context.Context) error {
    // Verify event time ordering
    if err := bv.verifyEventOrdering(ctx); err != nil {
@@ -214,17 +243,15 @@ func (bv *BatchVerifier) verifyBatchConstraints(ctx context.Context) error {
 }
 
 func (bv *BatchVerifier) verifyEventOrdering(ctx context.Context) error {
-   // Verify events are properly ordered by timestamp
+   // Verify events are properly ordered by timestamp within each queue
    for _, events := range bv.eventQueue {
        lastTimestamp := ""
        for _, event := range events {
            if event.timestamp <= lastTimestamp {
-               return ErrInvalidEventOrder
+               return ErrInvalidTimestamp
            }
            lastTimestamp = event.timestamp
        }
    }
    return nil
 }
-
-
