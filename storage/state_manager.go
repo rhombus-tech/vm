@@ -112,11 +112,13 @@ func (*StateManager) SetObject(ctx context.Context, mu state.Mutable, id string,
 
 // QueueEvent adds an event to the state
 func (*StateManager) QueueEvent(ctx context.Context, mu state.Mutable, event *actions.SendEventAction) error {
-    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, roughtime.Now(), event.IDTo))
+    // Use attestation timestamp instead of calling roughtime directly
+    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, event.Attestations[0].Timestamp, event.IDTo))
     
     eventData := map[string]interface{}{
         "function_call": event.FunctionCall,
         "parameters":    event.Parameters,
+        "attestations": event.Attestations,
     }
 
     eventBytes, err := codec.Marshal(eventData)
