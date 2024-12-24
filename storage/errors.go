@@ -24,4 +24,14 @@ var (
     // State errors
     ErrInvalidState     = errors.New("invalid state")
     ErrStateNotFound    = errors.New("state not found")
+
+    // Attestation errors
+    ErrInvalidAttestation = errors.New("invalid attestation")
+    ErrMissingAttestation = errors.New("missing attestation")
+    ErrAttestationMismatch = errors.New("attestation pair mismatch")
+
+    // Time errors
+    ErrInvalidTimestamp = errors.New("invalid timestamp")
+    ErrStaleTimestamp = errors.New("timestamp outside valid window")
+    ErrTimestampMismatch = errors.New("timestamp mismatch between attestations")
 )
