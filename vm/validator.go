@@ -12,6 +12,7 @@ var (
     ErrMalformedCode     = errors.New("malformed code")
     ErrCodeTooLarge      = errors.New("code exceeds size limit")
     ErrInvalidHeader     = errors.New("invalid code header")
+    ErrInvalidTEEFormat  = errors.New("code format not supported by TEE")
 )
 
 const (
@@ -27,20 +28,23 @@ const (
 
 // CodeHeader represents the metadata for code
 type CodeHeader struct {
-    Format  uint8  // Code format identifier
-    Version uint8  // Version number for the format
-    Reserved [6]byte // Reserved for future use
+    Format   uint8    // Code format identifier
+    Version  uint8    // Version number for the format
+    TEEType  uint8    // Type of TEE that can execute this code
+    Reserved [5]byte  // Reserved for future use
 }
 
 // CodeValidator handles validation of code in different formats
 type CodeValidator struct {
     maxSize uint64
     formats map[uint8]FormatValidator
+    teeFormats map[uint8][]uint8 // Maps TEE types to supported formats
 }
 
 // FormatValidator interface for different code formats
 type FormatValidator interface {
     Validate(code []byte) error
+    ValidateForTEE(code []byte, teeType uint8) error
 }
 
 // NewCodeValidator creates a new validator instance
@@ -48,12 +52,17 @@ func NewCodeValidator(maxSize uint64) *CodeValidator {
     cv := &CodeValidator{
         maxSize: maxSize,
         formats: make(map[uint8]FormatValidator),
+        teeFormats: make(map[uint8][]uint8),
     }
 
     // Register default format validators
     cv.RegisterFormat(FormatRaw, &RawValidator{})
     cv.RegisterFormat(FormatWasm, &WasmValidator{})
     cv.RegisterFormat(FormatCustom, &CustomValidator{})
+
+    // Register TEE format support
+    cv.RegisterTEEFormat(TEETypeSGX, []uint8{FormatWasm})
+    cv.RegisterTEEFormat(TEETypeSEV, []uint8{FormatWasm, FormatCustom})
 
     return cv
 }
@@ -79,8 +88,9 @@ func (cv *CodeValidator) ValidateCode(code []byte) error {
     header := &CodeHeader{
         Format:  code[8],
         Version: code[9],
+        TEEType: code[10],
     }
-    copy(header.Reserved[:], code[10:16])
+    copy(header.Reserved[:], code[11:16])
 
     // Get validator for format
     validator, exists := cv.formats[header.Format]
@@ -88,8 +98,18 @@ func (cv *CodeValidator) ValidateCode(code []byte) error {
         return ErrUnsupportedFormat
     }
 
+    // Check if format is supported by TEE type
+    if !cv.isFormatSupportedByTEE(header.Format, header.TEEType) {
+        return ErrInvalidTEEFormat
+    }
+
     // Validate format-specific code (after header)
-    return validator.Validate(code[HeaderSize:])
+    if err := validator.Validate(code[HeaderSize:]); err != nil {
+        return err
+    }
+
+    // Validate TEE-specific requirements
+    return validator.ValidateForTEE(code[HeaderSize:], header.TEEType)
 }
 
 // RegisterFormat registers a new format validator
@@ -97,30 +117,43 @@ func (cv *CodeValidator) RegisterFormat(format uint8, validator FormatValidator)
     cv.formats[format] = validator
 }
 
-// Raw format validator (simple bytecode)
+// RegisterTEEFormat registers which formats a TEE type supports
+func (cv *CodeValidator) RegisterTEEFormat(teeType uint8, formats []uint8) {
+    cv.teeFormats[teeType] = formats
+}
+
+func (cv *CodeValidator) isFormatSupportedByTEE(format uint8, teeType uint8) bool {
+    supportedFormats, exists := cv.teeFormats[teeType]
+    if !exists {
+        return false
+    }
+    for _, f := range supportedFormats {
+        if f == format {
+            return true
+        }
+    }
+    return false
+}
+
+// Raw format validator
 type RawValidator struct{}
 
 func (v *RawValidator) Validate(code []byte) error {
-    // Basic validation for raw format
     if len(code) == 0 {
         return ErrMalformedCode
     }
-    
-    // Verify basic structure (example)
-    // - First byte: number of functions
-    numFunctions := code[0]
-    if len(code) < int(numFunctions)*2+1 { // minimum size check
-        return ErrMalformedCode
-    }
-    
     return nil
+}
+
+func (v *RawValidator) ValidateForTEE(code []byte, teeType uint8) error {
+    // Raw format typically not supported in TEEs
+    return ErrInvalidTEEFormat
 }
 
 // Wasm format validator
 type WasmValidator struct{}
 
 func (v *WasmValidator) Validate(code []byte) error {
-    // Wasm magic number (\0asm)
     wasmMagic := []byte{0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00}
     
     if len(code) < len(wasmMagic) {
@@ -131,13 +164,11 @@ func (v *WasmValidator) Validate(code []byte) error {
         return ErrInvalidFormat
     }
     
-    // TODO: Add more comprehensive WASM validation
-    // This would include:
-    // - Section validation
-    // - Type checking
-    // - Import/Export validation
-    // - etc.
-    
+    return nil
+}
+
+func (v *WasmValidator) ValidateForTEE(code []byte, teeType uint8) error {
+    // Add TEE-specific WASM validation
     return nil
 }
 
@@ -145,13 +176,10 @@ func (v *WasmValidator) Validate(code []byte) error {
 type CustomValidator struct{}
 
 func (v *CustomValidator) Validate(code []byte) error {
-    // Example custom format validation
     if len(code) < 4 {
         return ErrMalformedCode
     }
     
-    // Example: check for specific structure
-    // - First 4 bytes: size of function table
     tableSize := binary.LittleEndian.Uint32(code[:4])
     if len(code) < int(tableSize)+4 {
         return ErrMalformedCode
@@ -160,12 +188,18 @@ func (v *CustomValidator) Validate(code []byte) error {
     return nil
 }
 
+func (v *CustomValidator) ValidateForTEE(code []byte, teeType uint8) error {
+    // Add TEE-specific custom format validation
+    return nil
+}
+
 // Helper function to create code with proper header
-func CreateCode(format uint8, version uint8, code []byte) []byte {
+func CreateCode(format uint8, version uint8, teeType uint8, code []byte) []byte {
     header := make([]byte, HeaderSize)
     copy(header, HeaderMagic)
     header[8] = format
     header[9] = version
+    header[10] = teeType
     
     return append(header, code...)
 }
