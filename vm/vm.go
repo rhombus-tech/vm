@@ -100,19 +100,24 @@ func WithConfig(config Config) vm.Option {
    }
 }
 
-// NewWithOptions returns a VM with the specified options
 func New(options ...vm.Option) (*vm.VM, error) {
-   options = append(options, With()) // Add ShuttleVM API
-   return defaultvm.New(
-       consts.Version,
-       genesis.DefaultGenesisFactory{},
-       &storage.StateManager{},
-       ActionParser,
-       AuthParser,
-       OutputParser,
-       auth.Engines(),
-       options...,
-   )
+    // Add default MorpheusVM options
+    options = append(options, 
+        With(),
+        vm.WithBuilder(),  // Enable block building
+        vm.WithGossiper(), // Enable gossip
+    )
+    
+    return defaultvm.New(
+        consts.Version,
+        genesis.DefaultGenesisFactory{},
+        &storage.StateManager{},
+        ActionParser,
+        AuthParser,
+        OutputParser,
+        auth.Engines(),
+        options...,
+    )
 }
 
 // NewWithConfig creates a new VM with custom configuration
