@@ -6,19 +6,22 @@ import (
    "context"
    "errors"
    "fmt"
+   "time"
 
    "github.com/ava-labs/hypersdk/chain"
    "github.com/ava-labs/hypersdk/state"
+   "github.com/ava-labs/hypersdk/coordination"
 
    "github.com/rhombus-tech/vm/actions"
 )
 
 var (
-   ErrBatchLimit        = errors.New("batch size exceeds limit")
-   ErrDuplicateAction   = errors.New("duplicate action in batch")
-   ErrConflictingAction = errors.New("conflicting actions in batch")
-   ErrInvalidTimestamp  = errors.New("invalid timestamp ordering")
+   ErrBatchLimit           = errors.New("batch size exceeds limit")
+   ErrDuplicateAction     = errors.New("duplicate action in batch")
+   ErrConflictingAction   = errors.New("conflicting actions in batch")
+   ErrInvalidTimestamp    = errors.New("invalid timestamp ordering")
    ErrDuplicateAttestation = errors.New("duplicate attestation in batch")
+   ErrCoordinationFailed  = errors.New("regional coordination failed")
 )
 
 const (
@@ -27,33 +30,39 @@ const (
 
 // BatchVerifier handles verification of multiple actions
 type BatchVerifier struct {
-   verifier *StateVerifier
+   verifier    *StateVerifier
+   coordinator *coordination.Coordinator
    
    // Track modifications within batch
    regionModifications map[string]modificationInfo
    objectModifications map[string]modificationInfo
    eventQueue         map[string][]eventInfo
    attestationsSeen   map[string]bool // Track attestations by TEE ID + timestamp
+   regionTasks       map[string]*coordination.Task
 }
 
 type modificationInfo struct {
-   created bool
+   created    bool
    teeUpdated bool
+   coordinated bool
 }
 
 type eventInfo struct {
    timestamp    string
    functionCall string
    attestations [2]actions.TEEAttestation
+   regionID     string
 }
 
-func NewBatchVerifier(state state.Mutable) *BatchVerifier {
+func NewBatchVerifier(state state.Mutable, coord *coordination.Coordinator) *BatchVerifier {
    return &BatchVerifier{
        verifier:            New(state),
+       coordinator:         coord,
        regionModifications: make(map[string]modificationInfo),
        objectModifications: make(map[string]modificationInfo),
        eventQueue:         make(map[string][]eventInfo),
        attestationsSeen:   make(map[string]bool),
+       regionTasks:       make(map[string]*coordination.Task),
    }
 }
 
@@ -68,6 +77,7 @@ func (bv *BatchVerifier) VerifyBatch(ctx context.Context, actions []chain.Action
    bv.objectModifications = make(map[string]modificationInfo)
    bv.eventQueue = make(map[string][]eventInfo)
    bv.attestationsSeen = make(map[string]bool)
+   bv.regionTasks = make(map[string]*coordination.Task)
 
    // First pass: collect all modifications and check for conflicts
    if err := bv.analyzeActions(ctx, actions); err != nil {
@@ -113,10 +123,16 @@ func (bv *BatchVerifier) analyzeActions(ctx context.Context, actions []chain.Act
                return ErrInvalidTimestamp
            }
 
+           // Setup coordination for this event's region
+           if err := bv.setupRegionCoordination(ctx, a); err != nil {
+               return err
+           }
+
            events = append(events, eventInfo{
                timestamp:    a.Attestations[0].Timestamp,
                functionCall: a.FunctionCall,
                attestations: a.Attestations,
+               regionID:    a.RegionID,
            })
            bv.eventQueue[a.IDTo] = events
            
@@ -205,6 +221,26 @@ func (bv *BatchVerifier) verifyEventInBatch(ctx context.Context, action *actions
    if info, exists := bv.objectModifications[action.IDTo]; exists && info.created {
        return ErrConflictingAction
    }
+
+   // Verify event coordination
+   task, exists := bv.regionTasks[action.RegionID]
+   if !exists {
+       return ErrCoordinationFailed
+   }
+
+   // Verify through coordinator
+   msg := &coordination.Message{
+       FromWorker: coordination.WorkerID(action.Attestations[0].EnclaveID),
+       ToWorker:   coordination.WorkerID(action.Attestations[1].EnclaveID),
+       Type:       coordination.MessageTypeVerification,
+       Data:       action.Parameters,
+       Timestamp:  action.Attestations[0].Timestamp,
+   }
+
+   if err := bv.coordinator.SendMessage(msg); err != nil {
+       return fmt.Errorf("%w: %s", ErrCoordinationFailed, err)
+   }
+
    return nil
 }
 
@@ -234,11 +270,61 @@ func (bv *BatchVerifier) verifyUpdateRegionInBatch(ctx context.Context, action *
    return nil
 }
 
+func (bv *BatchVerifier) setupRegionCoordination(ctx context.Context, event *actions.SendEventAction) error {
+    // Skip if we already have a task for this region
+    if _, exists := bv.regionTasks[event.RegionID]; exists {
+        return nil
+    }
+
+    // Create coordination task
+    task := &coordination.Task{
+        ID:           event.RegionID,
+        WorkerIDs:    bv.getRegionWorkers(event.RegionID),
+        Data:         event.Parameters,
+        Attestations: [][]byte{
+            event.Attestations[0].EnclaveID,
+            event.Attestations[1].EnclaveID,
+        },
+        Timeout:      5 * time.Second,
+    }
+
+    // Submit to coordinator
+    if err := bv.coordinator.SubmitTask(ctx, task); err != nil {
+        return fmt.Errorf("%w: failed to submit task: %s", ErrCoordinationFailed, err)
+    }
+
+    bv.regionTasks[event.RegionID] = task
+    return nil
+}
+
+func (bv *BatchVerifier) getRegionWorkers(regionID string) []coordination.WorkerID {
+    var workers []coordination.WorkerID
+    allWorkers := bv.coordinator.GetWorkerIDs()
+    
+    // Filter workers for the specific region
+    for _, worker := range allWorkers {
+        if isWorkerInRegion(worker, regionID) {
+            workers = append(workers, worker)
+        }
+    }
+    
+    return workers
+}
+
 func (bv *BatchVerifier) verifyBatchConstraints(ctx context.Context) error {
    // Verify event time ordering
    if err := bv.verifyEventOrdering(ctx); err != nil {
        return err
    }
+
+   // Verify all region coordination completed successfully
+   for regionID, task := range bv.regionTasks {
+       if err := bv.coordinator.WaitForTask(ctx, task.ID); err != nil {
+           return fmt.Errorf("%w: region %s failed coordination: %s", 
+               ErrCoordinationFailed, regionID, err)
+       }
+   }
+
    return nil
 }
 
@@ -254,4 +340,11 @@ func (bv *BatchVerifier) verifyEventOrdering(ctx context.Context) error {
        }
    }
    return nil
+}
+
+// Helper function to check if a worker belongs to a region
+func isWorkerInRegion(workerID coordination.WorkerID, regionID string) bool {
+    // Implementation would check worker's region assignment
+    // This is a placeholder - actual implementation would check region membership
+    return true
 }

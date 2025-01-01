@@ -22,7 +22,9 @@ const (
 
 var _ (chain.StateManager) = (*StateManager)(nil)
 
-type StateManager struct{}
+type StateManager struct{
+    coordinator *coordination.Coordinator
+}
 
 // Existing methods
 func (*StateManager) HeightKey() []byte {
@@ -186,6 +188,36 @@ func (*StateManager) RegionExists(ctx context.Context, im state.Immutable, id st
     return im.HasValue(ctx, key)
 }
 
+func (sm *StateManager) VerifyStateTransition(ctx context.Context, action chain.Action) error {
+    switch a := action.(type) {
+    case *actions.SendEventAction:
+        // Verify region coordination
+        return sm.verifyRegionalEvent(ctx, a)
+    }
+    return nil
+}
+
+func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *actions.SendEventAction) error {
+    // Get workers for region
+    workers := sm.coordinator.GetWorkerIDs()
+    regWorkers := filterWorkersForRegion(workers, event.RegionID)
+    
+    // Create coordination task
+    task := &coordination.Task{
+        ID:           event.IDTo,
+        WorkerIDs:    regWorkers,
+        Data:         event.Parameters,
+        Attestations: event.Attestations[:],
+        Timeout:      5 * time.Second,
+    }
+
+    // Submit for coordination
+    if err := sm.coordinator.SubmitTask(ctx, task); err != nil {
+        return fmt.Errorf("coordination failed: %w", err)
+    }
+
+    return nil
+}
 
 // Additional state keys for ShuttleVM actions
 func (*StateManager) GetShuttleStateKeys(id string) state.Keys {

@@ -37,6 +37,7 @@ type TEEAttestation struct {
    Timestamp    string
    Data         []byte
    Signature    []byte
+   RegionProof  []byte // Add proof of region execution
 }
 
 func (a *TEEAttestation) Marshal(p *codec.Packer) {
@@ -165,6 +166,7 @@ type SendEventAction struct {
     FunctionCall string `json:"function_call"`
     Parameters   []byte `json:"parameters"`
     Attestations  [2]TEEAttestation // Paired TEE attestations
+    RegionID     string // Add region identifier
 }
 
 func (*SendEventAction) GetTypeID() uint8 { return SendEvent }

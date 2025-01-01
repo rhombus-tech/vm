@@ -24,6 +24,7 @@ var (
 
 type StateVerifier struct {
    state state.Mutable
+   coordinator *coordination.Coordinator
 }
 
 func New(state state.Mutable) *StateVerifier {
@@ -93,20 +94,32 @@ func (v *StateVerifier) verifyAttestation(ctx context.Context, attestation actio
 }
 
 func (v *StateVerifier) verifyAttestationPair(ctx context.Context, attestations [2]actions.TEEAttestation, region map[string]interface{}) error {
-   // Verify both attestations
-   if err := v.verifyAttestation(ctx, attestations[0], region); err != nil {
-       return err
-   }
-   if err := v.verifyAttestation(ctx, attestations[1], region); err != nil {
-       return err
+   // Create secure channels between TEEs
+   channels := make(map[string]*coordination.SecureChannel)
+   for i := 0; i < len(attestations); i++ {
+       for j := i + 1; j < len(attestations); j++ {
+           channel := coordination.NewSecureChannel(
+               coordination.WorkerID(attestations[i].EnclaveID), 
+               coordination.WorkerID(attestations[j].EnclaveID),
+           )
+           if err := channel.EstablishSecure(); err != nil {
+               return err
+           }
+           channels[makeChannelKey(i, j)] = channel
+       }
    }
 
-   // Verify attestations match
-   if attestations[0].Timestamp != attestations[1].Timestamp {
-       return ErrInvalidAttestation
+   // Verify through coordinator
+   msg := &coordination.Message{
+       Type: coordination.MessageTypeVerification,
+       Data: attestations[0].Data,
    }
-   if !bytes.Equal(attestations[0].Data, attestations[1].Data) {
-       return ErrInvalidAttestation
+
+   // Send verification messages
+   for _, channel := range channels {
+       if err := channel.Send(msg.Data); err != nil {
+           return err
+       }
    }
 
    return nil

@@ -12,6 +12,7 @@ import (
    "github.com/ava-labs/hypersdk/codec"
    "github.com/ava-labs/hypersdk/consts"
    "github.com/ava-labs/hypersdk/state"
+   "github.com/ava-labs/hypersdk/coordination"
    smath "github.com/ava-labs/avalanchego/utils/math"
 )
 
@@ -31,6 +32,10 @@ type ReadState func(context.Context, [][]byte) ([][]byte, []error)
 //   -> [timestamp][id] => event
 // 0x6/ (input)
 //   -> input object id
+// 0x7/ (region)
+//   -> [id] => region data
+// 0x8/ (coordination)
+//   -> [id] => coordination state
 
 const (
    // Active state
@@ -43,9 +48,8 @@ const (
    objectPrefix    = 0x4
    eventPrefix     = 0x5
    inputPrefix     = 0x6
-
-   //Region
-   regionPrefix = 0x7
+   regionPrefix    = 0x7
+   coordPrefix     = 0x8
 )
 
 const BalanceChunks uint16 = 1
@@ -54,7 +58,88 @@ var (
    heightKey    = []byte{heightPrefix}
    timestampKey = []byte{timestampPrefix}
    feeKey      = []byte{feePrefix}
+
+   ErrInvalidCoordination = errors.New("invalid coordination state")
 )
+
+// New coordination functions
+type CoordinationState struct {
+   Workers    []coordination.WorkerID `json:"workers"`
+   Regions    []string               `json:"regions"`
+   Tasks      map[string]TaskState   `json:"tasks"`
+}
+
+type TaskState struct {
+   Status      string                `json:"status"`
+   Workers     []coordination.WorkerID `json:"workers"`
+   Attestations [][2][]byte          `json:"attestations"`
+   Timestamp    string               `json:"timestamp"`
+}
+
+func CoordinationKey(id string) []byte {
+   k := make([]byte, 1+len(id))
+   k[0] = coordPrefix
+   copy(k[1:], []byte(id))
+   return k
+}
+
+func GetCoordinationState(
+   ctx context.Context,
+   im state.Immutable,
+) (*CoordinationState, error) {
+   k := []byte{coordPrefix}
+   v, err := im.GetValue(ctx, k)
+   if errors.Is(err, database.ErrNotFound) {
+       return &CoordinationState{
+           Tasks: make(map[string]TaskState),
+       }, nil
+   }
+   if err != nil {
+       return nil, err
+   }
+
+   var state CoordinationState
+   if err := codec.Unmarshal(v, &state); err != nil {
+       return nil, err
+   }
+   return &state, nil
+}
+
+func SetCoordinationState(
+   ctx context.Context,
+   mu state.Mutable,
+   state *CoordinationState,
+) error {
+   k := []byte{coordPrefix}
+   v, err := codec.Marshal(state)
+   if err != nil {
+       return err
+   }
+   return mu.Insert(ctx, k, v)
+}
+
+func UpdateTaskState(
+   ctx context.Context,
+   mu state.Mutable,
+   taskID string,
+   status string,
+   workers []coordination.WorkerID,
+   attestations [][2][]byte,
+) error {
+   state, err := GetCoordinationState(ctx, mu)
+   if err != nil {
+       return err
+   }
+
+   state.Tasks[taskID] = TaskState{
+       Status:       status,
+       Workers:      workers,
+       Attestations: attestations,
+       Timestamp:    string(timestampKey),
+   }
+
+   return SetCoordinationState(ctx, mu, state)
+}
 
 // [balancePrefix] + [address]
 func BalanceKey(addr codec.Address) (k []byte) {
@@ -243,40 +328,103 @@ func GetObject(
    return obj, nil
 }
 
+// Modified object storage to include coordination
 func SetObject(
    ctx context.Context,
    mu state.Mutable,
    id string,
    obj map[string][]byte,
+   coordState *CoordinationState,
 ) error {
    k := ObjectKey(id)
    v, err := codec.Marshal(obj)
    if err != nil {
        return err
    }
-   return mu.Insert(ctx, k, v)
+
+   // Store object
+   if err := mu.Insert(ctx, k, v); err != nil {
+       return err
+   }
+
+   // Update coordination state if provided
+   if coordState != nil {
+       if err := SetCoordinationState(ctx, mu, coordState); err != nil {
+           return err
+       }
+   }
+
+   return nil
 }
 
+// Modified event queue to include coordination
 func QueueEvent(
-    ctx context.Context,
-    mu state.Mutable,
-    id string,
-    functionCall string,
-    parameters []byte,
-    attestations [2]actions.TEEAttestation,
+   ctx context.Context,
+   mu state.Mutable,
+   id string,
+   functionCall string,
+   parameters []byte,
+   attestations [2]actions.TEEAttestation,
+   coordState *CoordinationState,
 ) error {
-    k := EventKey(attestations[0].Timestamp, id)
-    event := map[string]interface{}{
-        "function_call": functionCall,
-        "parameters":    parameters,
-        "attestations": attestations,
-    }
-    v, err := codec.Marshal(event)
-    if err != nil {
-        return err
-    }
-    return mu.Insert(ctx, k, v)
+   k := EventKey(attestations[0].Timestamp, id)
+   event := map[string]interface{}{
+       "function_call": functionCall,
+       "parameters":    parameters,
+       "attestations": attestations,
+   }
+   v, err := codec.Marshal(event)
+   if err != nil {
+       return err
+   }
+
+   // Store event
+   if err := mu.Insert(ctx, k, v); err != nil {
+       return err
+   }
+
+   // Update coordination state
+   if coordState != nil {
+       taskID := fmt.Sprintf("event:%s:%s", id, attestations[0].Timestamp)
+       workers := []coordination.WorkerID{
+           coordination.WorkerID(attestations[0].EnclaveID),
+           coordination.WorkerID(attestations[1].EnclaveID),
+       }
+       attBytes := [][2][]byte{{
+           attestations[0].EnclaveID,
+           attestations[1].EnclaveID,
+       }}
+       
+       if err := UpdateTaskState(ctx, mu, taskID, "pending", workers, attBytes); err != nil {
+           return err
+       }
+   }
+
+   return nil
 }
+
+// Helper function to validate coordination state
+func ValidateCoordinationState(state *CoordinationState) error {
+   if state == nil {
+       return ErrInvalidCoordination
+   }
+   
+   if len(state.Workers) < 2 {
+       return fmt.Errorf("%w: insufficient workers", ErrInvalidCoordination)
+   }
+   
+   for taskID, task := range state.Tasks {
+       if len(task.Workers) < 2 {
+           return fmt.Errorf("%w: insufficient workers for task %s", ErrInvalidCoordination, taskID)
+       }
+       if len(task.Attestations) == 0 {
+           return fmt.Errorf("%w: missing attestations for task %s", ErrInvalidCoordination, taskID)
+       }
+   }
+   
+   return nil
+}
+
 
 func GetEvent(
    ctx context.Context,
