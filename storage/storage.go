@@ -12,7 +12,7 @@ import (
    "github.com/ava-labs/hypersdk/codec"
    "github.com/ava-labs/hypersdk/consts"
    "github.com/ava-labs/hypersdk/state"
-   "github.com/ava-labs/hypersdk/coordination"
+   "github.com/rhombus-tech/hypersdk/coordination"
    smath "github.com/ava-labs/avalanchego/utils/math"
 )
 

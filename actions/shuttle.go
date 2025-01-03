@@ -3,138 +3,97 @@
 package actions
 
 import (
-	"bytes"
-	"context"
-	"errors"
-	"fmt"
-	"time"
+    "context"
+    "errors"
+    "fmt"
+    "time"
 
-	"github.com/ava-labs/hypersdk/chain"
-	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/consts"
-	"github.com/cloudflare/roughtime"
-	"github.com/rhombus-tech/hypersdk/coordination"
-	"github.com/rhombus-tech/vm/storage"
+    "github.com/ava-labs/hypersdk/chain"
+    "github.com/ava-labs/hypersdk/codec"
+    "github.com/rhombus-tech/hypersdk/coordination"
 )
 
 var (
-   ErrObjectExists    = errors.New("object already exists")
-   ErrObjectNotFound  = errors.New("object not found")
-   ErrInvalidID       = errors.New("invalid object ID")
-   ErrInvalidFunction = errors.New("invalid function call")
-   ErrCodeTooLarge    = errors.New("code size exceeds maximum")  
-   ErrStorageTooLarge = errors.New("storage size exceeds maximum")
-   
-   // New attestation errors
-   ErrMissingAttestation = errors.New("missing TEE attestation")
-   ErrInvalidAttestation = errors.New("invalid TEE attestation")
-   ErrAttestationMismatch = errors.New("attestation pair mismatch")
-   ErrInvalidTimestamp      = errors.New("invalid roughtime stamp")
-   
-   MaxCodeSize    = 1024 * 1024    // 1MB
-   MaxStorageSize = 1024 * 1024    // 1MB
+    ErrObjectExists    = errors.New("object already exists")
+    ErrObjectNotFound  = errors.New("object not found")
+    ErrInvalidID       = errors.New("invalid object ID")
+    ErrInvalidFunction = errors.New("invalid function call")
+    ErrCodeTooLarge    = errors.New("code size exceeds maximum")  
+    ErrStorageTooLarge = errors.New("storage size exceeds maximum")
 )
-
-
-// New attestation types
-type TEEAttestation struct {
-   EnclaveID    []byte
-   Measurement  []byte 
-   Timestamp    string
-   Data         []byte
-   Signature    []byte
-   RegionProof  []byte // Add proof of region execution
-}
-
-func (a *TEEAttestation) Marshal(p *codec.Packer) {
-   p.PackBytes(a.EnclaveID)
-   p.PackBytes(a.Measurement)
-   p.PackString(a.Timestamp)
-   p.PackBytes(a.Data)
-   p.PackBytes(a.Signature)
-}
-
-func UnmarshalAttestation(p *codec.Packer) (TEEAttestation, error) {
-   var att TEEAttestation
-   
-   enclaveID, err := p.UnpackBytes()
-   if err != nil {
-       return att, err
-   }
-   att.EnclaveID = enclaveID
-   
-   measurement, err := p.UnpackBytes() 
-   if err != nil {
-       return att, err
-   }
-   att.Measurement = measurement
-   
-   timestamp, err := p.UnpackString()
-   if err != nil {
-       return att, err
-   }
-   att.Timestamp = timestamp
-   
-   data, err := p.UnpackBytes()
-   if err != nil {
-       return att, err
-   }
-   att.Data = data
-   
-   sig, err := p.UnpackBytes()
-   if err != nil {
-       return att, err
-   }
-   att.Signature = sig
-   
-   return att, nil
-}
 
 const (
-   CreateObject uint8 = iota
-   SendEvent
-   SetInputObject
+    MaxCodeSize    = 1024 * 1024    // 1MB
+    MaxStorageSize = 1024 * 1024    // 1MB
+    MaxIDLength    = 256
+
+    CreateObject uint8 = iota
+    SendEvent
+    SetInputObject
 )
 
+// Core types
+type ObjectState struct {
+    Code        []byte            `json:"code"`
+    Storage     []byte            `json:"storage"`
+    RegionID    string           `json:"region_id"`
+    Events      []string         `json:"events"`     // Event history
+    LastUpdated time.Time        `json:"last_updated"`
+    Status      string           `json:"status"`
+}
+
+type VM interface {
+    chain.VM
+    Coordinator() *coordination.Coordinator
+}
+
 type CreateObjectAction struct {
-    ID      string `json:"id"`
-    Code    []byte `json:"code"`
-    Storage []byte `json:"storage"`
+    ID       string `json:"id"`
+    Code     []byte `json:"code"`
+    Storage  []byte `json:"storage"`
+    RegionID string `json:"region_id"`
 }
 
 func (*CreateObjectAction) GetTypeID() uint8 { return CreateObject }
+
+func (a *CreateObjectAction) ComputeUnits(rules chain.Rules) uint64 {
+    return 1 + uint64(len(a.Code)+len(a.Storage))/1024
+}
 
 func (a *CreateObjectAction) Marshal(p *codec.Packer) {
     p.PackString(a.ID)
     p.PackBytes(a.Code)
     p.PackBytes(a.Storage)
+    p.PackString(a.RegionID)
 }
 
 func UnmarshalCreateObject(p *codec.Packer) (chain.Action, error) {
     var act CreateObjectAction
-    id, err := p.UnpackString()
-    if err != nil {
-        return nil, err
-    }
-    act.ID = id
     
-    code, err := p.UnpackBytes()
+    var err error
+    act.ID, err = p.UnpackString()
     if err != nil {
         return nil, err
     }
-    act.Code = code
     
-    storage, err := p.UnpackBytes()
+    if err := p.UnpackBytesInto(&act.Code); err != nil {
+        return nil, err
+    }
+    
+    if err := p.UnpackBytesInto(&act.Storage); err != nil {
+        return nil, err
+    }
+    
+    act.RegionID, err = p.UnpackString()
     if err != nil {
         return nil, err
     }
-    act.Storage = storage
     
     return &act, nil
 }
 
 func (a *CreateObjectAction) Verify(ctx context.Context, vm chain.VM) error {
-    if len(a.ID) == 0 || len(a.ID) > 256 {
+    if len(a.ID) == 0 || len(a.ID) > MaxIDLength {
         return ErrInvalidID
     }
     if len(a.Code) > MaxCodeSize {
@@ -143,208 +102,77 @@ func (a *CreateObjectAction) Verify(ctx context.Context, vm chain.VM) error {
     if len(a.Storage) > MaxStorageSize {
         return ErrStorageTooLarge
     }
-    if exists, err := objectExists(ctx, vm, a.ID); err != nil {
+
+    // Verify region exists
+    if _, err := GetRegion(ctx, vm, a.RegionID); err != nil {
         return err
-    } else if exists {
+    }
+
+    // Check if object already exists
+    state := vm.State()
+    exists, err := state.Has(ctx, []byte("object:"+a.ID))
+    if err != nil {
+        return err
+    }
+    if exists {
         return ErrObjectExists
     }
+
     return validateCode(a.Code)
 }
 
-type ObjectState struct {
-    Code         []byte
-    Storage      []byte
-    RegionID     string                // Region this object belongs to
-    Coordination *CoordinationState    // Track coordination state
-}
-
-type CoordinationState struct {
-    LastTaskID      string
-    ActiveWorkers   []coordination.WorkerID
-    PendingTasks    map[string]*coordination.Task
-    LastAttestation time.Time
-}
-
 func (a *CreateObjectAction) Execute(ctx context.Context, vm chain.VM) (*CreateObjectResult, error) {
-    // 1. Get coordinator through VM interface
-    vmWithCoord, ok := vm.(VM)
-    if !ok {
-        return nil, fmt.Errorf("vm does not support coordination")
-    }
-    coord := vmWithCoord.Coordinator()
-    if coord == nil {
-        return nil, fmt.Errorf("coordinator not initialized")
+    state := vm.State()
+    key := []byte("object:" + a.ID)
+
+    obj := ObjectState{
+        Code:        a.Code,
+        Storage:     a.Storage,
+        RegionID:    a.RegionID,
+        Events:      make([]string, 0),
+        LastUpdated: time.Now().UTC(),
+        Status:      "active",
     }
 
-    // 2. Validate region first
-    if err := validateRegion(ctx, vm, a.RegionID); err != nil {
-        return nil, err
-    }
-
-    // 3. Create enhanced object structure with coordination info
-    obj := map[string]interface{}{
-        "code":    a.Code,
-        "storage": a.Storage,
-        "coordination": map[string]interface{}{
-            "region_id": a.RegionID,
-            "state": map[string]interface{}{
-                "created_at":        time.Now().UTC().Format(time.RFC3339),
-                "last_event":        "",
-                "last_coordination": "",
-                "status":           "initialized",
-                "tasks":            make(map[string]interface{}),
-                "access_log":       make([]string, 0), // Track worker access
-            },
-            "config": map[string]interface{}{
-                "timeout":           5 * time.Second,
-                "max_retries":       3,
-                "sync_interval":     10 * time.Second,
-                "heartbeat_enabled": true,
-            },
-        },
-    }
-
-    // 4. Get and configure region workers
-    regionWorkers, err := getRegionWorkers(ctx, vm, a.RegionID)
-    if err != nil {
-        return nil, err
-    }
-
-    coordConfig := obj["coordination"].(map[string]interface{})
-    coordConfig["allowed_workers"] = regionWorkers
-    
-    // 5. Store object state
     objBytes, err := codec.Marshal(obj)
     if err != nil {
-        return nil, fmt.Errorf("failed to marshal object: %w", err)
+        return nil, err
     }
 
-    key := []byte("object:" + a.ID)
-    if err := vm.State().Set(ctx, key, objBytes); err != nil {
-        return nil, fmt.Errorf("failed to store object: %w", err)
+    if err := state.Set(ctx, key, objBytes); err != nil {
+        return nil, err
     }
 
-    // 6. Update coordination state atomically
-    coordState, err := storage.GetCoordinationState(ctx, vm.State())
-    if err != nil {
-        vm.State().Remove(ctx, key)
-        return nil, fmt.Errorf("failed to get coordination state: %w", err)
-    }
-
-    // Initialize region objects if needed
-    if coordState.Regions == nil {
-        coordState.Regions = make(map[string]map[string]storage.TaskState)
-    }
-    if coordState.Regions[a.RegionID] == nil {
-        coordState.Regions[a.RegionID] = make(map[string]storage.TaskState)
-    }
-
-    // Add object to region tracking
-    coordState.Regions[a.RegionID][a.ID] = storage.TaskState{
-        Status:    "initialized",
-        Workers:   regionWorkers,
-        Timestamp: time.Now().UTC().Format(time.RFC3339),
-        Config:    coordConfig["config"].(map[string]interface{}),
-    }
-
-    // Store updated coordination state
-    if err := storage.SetCoordinationState(ctx, vm.State(), coordState); err != nil {
-        vm.State().Remove(ctx, key)
-        return nil, fmt.Errorf("failed to update coordination state: %w", err)
+    // Register object with region
+    if err := RegisterRegionObject(ctx, vm, a.RegionID, a.ID); err != nil {
+        // Cleanup on failure
+        state.Remove(ctx, key)
+        return nil, err
     }
 
     return &CreateObjectResult{
-        ID:          a.ID,
-        RegionID:    a.RegionID,
-        StateHash:   coordState.StateHash(),
-        WorkerCount: len(regionWorkers),
-        Status:      "initialized",
+        ID:       a.ID,
+        RegionID: a.RegionID,
     }, nil
 }
 
-// Helper functions for better organization
-func validateRegion(ctx context.Context, vm chain.VM, regionID string) error {
-    regionKey := []byte("region:" + regionID)
-    exists, err := vm.State().Has(ctx, regionKey)
-    if err != nil {
-        return fmt.Errorf("failed to check region: %w", err)
-    }
-    if !exists {
-        return ErrRegionNotFound
-    }
-    return nil
-}
-
-func getRegionWorkers(ctx context.Context, vm chain.VM, regionID string) ([]coordination.WorkerID, error) {
-    regionKey := []byte("region:" + regionID)
-    regionBytes, err := vm.State().Get(ctx, regionKey)
-    if err != nil {
-        return nil, fmt.Errorf("failed to get region: %w", err)
-    }
-
-    var region map[string]interface{}
-    if err := codec.Unmarshal(regionBytes, &region); err != nil {
-        return nil, fmt.Errorf("failed to unmarshal region: %w", err)
-    }
-
-    coordInfo, ok := region["coordination"].(map[string]interface{})
-    if !ok {
-        return nil, fmt.Errorf("invalid region coordination info")
-    }
-
-    workers, ok := coordInfo["workers"].([]coordination.WorkerID)
-    if !ok || len(workers) == 0 {
-        return nil, fmt.Errorf("no workers available in region")
-    }
-
-    return workers, nil
-}
-
-// Get worker IDs for a region
-func getWorkerIDs(tees []TEEAddress) []coordination.WorkerID {
-    ids := make([]coordination.WorkerID, len(tees))
-    for i, tee := range tees {
-        ids[i] = coordination.WorkerID(tee)
-    }
-    return ids
-}
-
-// Get active workers for a region
-func getRegionWorkers(coord *coordination.Coordinator, regionID string) []coordination.WorkerID {
-    workers := coord.GetWorkerIDs()
-    var regionWorkers []coordination.WorkerID
-    
-    for _, worker := range workers {
-        if isWorkerInRegion(worker, regionID) {
-            regionWorkers = append(regionWorkers, worker)
-        }
-    }
-    
-    return regionWorkers
-}
-
-// Check if worker belongs to region
-func isWorkerInRegion(worker coordination.WorkerID, regionID string) bool {
-    // Implementation would check worker's region assignment
-    // This is a placeholder
-    return true
-}
-
 type SendEventAction struct {
-    IDTo         string `json:"id_to"`
-    FunctionCall string `json:"function_call"`
-    Parameters   []byte `json:"parameters"`
-    Attestations  [2]TEEAttestation // Paired TEE attestations
-    RegionID     string // Add region identifier
+    IDTo         string           `json:"id_to"`
+    FunctionCall string           `json:"function_call"`
+    Parameters   []byte           `json:"parameters"`
+    Attestations [2]TEEAttestation `json:"attestations"`
 }
 
 func (*SendEventAction) GetTypeID() uint8 { return SendEvent }
+
+func (a *SendEventAction) ComputeUnits(rules chain.Rules) uint64 {
+    return 1 + uint64(len(a.Parameters))/1024
+}
 
 func (a *SendEventAction) Marshal(p *codec.Packer) {
     p.PackString(a.IDTo)
     p.PackString(a.FunctionCall)
     p.PackBytes(a.Parameters)
-    p.PackString(a.RegionID)  // Add this line
     a.Attestations[0].Marshal(p)
     a.Attestations[1].Marshal(p)
 }
@@ -352,37 +180,27 @@ func (a *SendEventAction) Marshal(p *codec.Packer) {
 func UnmarshalSendEvent(p *codec.Packer) (chain.Action, error) {
     var act SendEventAction
     
-    idTo, err := p.UnpackString()
+    var err error
+    act.IDTo, err = p.UnpackString()
     if err != nil {
         return nil, err
     }
-    act.IDTo = idTo
     
-    functionCall, err := p.UnpackString()
+    act.FunctionCall, err = p.UnpackString()
     if err != nil {
         return nil, err
     }
-    act.FunctionCall = functionCall
     
-    parameters, err := p.UnpackBytes()
-    if err != nil {
+    if err := p.UnpackBytesInto(&act.Parameters); err != nil {
         return nil, err
     }
-    act.Parameters = parameters
-
-    // Add this block
-    regionID, err := p.UnpackString()
-    if err != nil {
-        return nil, err
-    }
-    act.RegionID = regionID
-
+    
     att0, err := UnmarshalAttestation(p)
     if err != nil {
         return nil, err
     }
     act.Attestations[0] = att0
-
+    
     att1, err := UnmarshalAttestation(p)
     if err != nil {
         return nil, err
@@ -393,26 +211,9 @@ func UnmarshalSendEvent(p *codec.Packer) (chain.Action, error) {
 }
 
 func (a *SendEventAction) Verify(ctx context.Context, vm chain.VM) error {
-    // 1. Get coordinator through VM interface
-    vmWithCoord, ok := vm.(VM)
-    if !ok {
-        return fmt.Errorf("vm does not support coordination")
-    }
-    coord := vmWithCoord.Coordinator()
-    if coord == nil {
-        return fmt.Errorf("coordinator not initialized")
-    }
-
-    // 2. Basic validation
-    if len(a.FunctionCall) == 0 || len(a.FunctionCall) > 256 {
-        return ErrInvalidFunction
-    }
-    if len(a.Parameters) > MaxStorageSize {
-        return ErrStorageTooLarge
-    }
-
-    // 3. Verify object exists and get its info
-    objBytes, err := vm.State().Get(ctx, []byte("object:"+a.IDTo))
+    // Get target object
+    state := vm.State()
+    objBytes, err := state.Get(ctx, []byte("object:"+a.IDTo))
     if err != nil {
         return err
     }
@@ -420,130 +221,31 @@ func (a *SendEventAction) Verify(ctx context.Context, vm chain.VM) error {
         return ErrObjectNotFound
     }
 
-    var obj map[string]interface{}
+    var obj ObjectState
     if err := codec.Unmarshal(objBytes, &obj); err != nil {
-        return fmt.Errorf("failed to unmarshal object: %w", err)
+        return err
     }
 
-    // 4. Verify region assignments
-    coordInfo, ok := obj["coordination"].(map[string]interface{})
-    if !ok {
-        return fmt.Errorf("invalid object coordination info")
+    // Verify function and parameters
+    if len(a.FunctionCall) == 0 || len(a.FunctionCall) > MaxIDLength {
+        return ErrInvalidFunction
+    }
+    if len(a.Parameters) > MaxStorageSize {
+        return ErrStorageTooLarge
     }
 
-    regionID, ok := coordInfo["region_id"].(string)
-    if !ok {
-        return fmt.Errorf("invalid region assignment")
-    }
-
-    // 5. Verify workers are authorized for region
+    // Verify workers are authorized for the region
     for _, att := range a.Attestations {
-        workerID := coordination.WorkerID(att.EnclaveID)
-        if err := verifyWorkerInRegion(ctx, vm, workerID, regionID); err != nil {
-            return fmt.Errorf("worker verification failed: %w", err)
+        if err := VerifyWorkerInRegion(ctx, vm, att.EnclaveID, obj.RegionID); err != nil {
+            return err
         }
     }
 
-    // 6. Verify attestation pair
-    if err := verifyAttestationPair(a.Attestations); err != nil {
-        return fmt.Errorf("attestation verification failed: %w", err)
-    }
-
-    // 7. Verify function exists 
-    if err := validateFunctionExists(ctx, vm, a.IDTo, a.FunctionCall); err != nil {
-        return fmt.Errorf("function validation failed: %w", err)
-    }
-
-    // 8. Verify worker states
-    for _, att := range a.Attestations {
-        workerID := coordination.WorkerID(att.EnclaveID)
-        worker, exists := coord.GetWorker(workerID)
-        if !exists {
-            return fmt.Errorf("worker %s not registered", workerID)
-        }
-        if worker.Status == WorkerStatusError {
-            return fmt.Errorf("worker %s in error state", workerID)
-        }
-    }
-
-    return nil
-}
-
-// Helper function to verify worker is authorized for region
-func verifyWorkerInRegion(ctx context.Context, vm chain.VM, workerID coordination.WorkerID, regionID string) error {
-    regionBytes, err := vm.State().Get(ctx, []byte("region:"+regionID))
-    if err != nil {
-        return err
-    }
-    if regionBytes == nil {
-        return ErrRegionNotFound
-    }
-
-    var region map[string]interface{}
-    if err := codec.Unmarshal(regionBytes, &region); err != nil {
-        return err
-    }
-
-    coordInfo, ok := region["coordination"].(map[string]interface{})
-    if !ok {
-        return fmt.Errorf("invalid region coordination info")
-    }
-
-    workers, ok := coordInfo["workers"].([]coordination.WorkerID)
-    if !ok {
-        return fmt.Errorf("invalid region workers")
-    }
-
-    for _, w := range workers {
-        if w == workerID {
-            return nil
-        }
-    }
-
-    return fmt.Errorf("worker not authorized for region")
-}
-
-func verifyAttestationPair(attestations [2]TEEAttestation) error {
-    // Verify both attestations exist 
-    if len(attestations[0].EnclaveID) == 0 || len(attestations[1].EnclaveID) == 0 {
-        return ErrMissingAttestation
-    }
-
-    // Verify timestamps match
-    if attestations[0].Timestamp != attestations[1].Timestamp {
-        return ErrAttestationMismatch
-    }
-
-    // Verify results match
-    if !bytes.Equal(attestations[0].Data, attestations[1].Data) {
-        return ErrAttestationMismatch
-    }
-
-    // Basic timestamp validation
-    if err := verifyTimestamp(attestations[0].Timestamp); err != nil {
-        return err
-    }
-
-    return nil
-}
-
-func verifyTimestamp(timestamp string) error {
-    // Add timestamp verification against roughtime
-    return nil
+    // Verify attestation pair
+    return verifyAttestationPair(a.Attestations)
 }
 
 func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventResult, error) {
-    // 1. Verify object exists
-    key := []byte("object:" + a.IDTo)
-    objBytes, err := vm.State().Get(ctx, key)
-    if err != nil {
-        return nil, err
-    }
-    if objBytes == nil {
-        return nil, ErrObjectNotFound
-    }
-
-    // 2. Get coordinator through VM interface - more modular approach
     vmWithCoord, ok := vm.(VM)
     if !ok {
         return nil, fmt.Errorf("vm does not support coordination")
@@ -553,66 +255,61 @@ func (a *SendEventAction) Execute(ctx context.Context, vm chain.VM) (*SendEventR
         return nil, fmt.Errorf("coordinator not initialized")
     }
 
-    // 3. Create coordination task
-    taskID := fmt.Sprintf("event:%s:%s", a.IDTo, a.Attestations[0].Timestamp)
-    task := &coordination.Task{
-        ID: taskID,
-        WorkerIDs: []coordination.WorkerID{
-            coordination.WorkerID(a.Attestations[0].EnclaveID),
-            coordination.WorkerID(a.Attestations[1].EnclaveID),
-        },
-        Data: a.Parameters,
-        Attestations: [][]byte{
-            a.Attestations[0].EnclaveID, 
-            a.Attestations[1].EnclaveID,
-        },
-        Timeout: 5 * time.Second,
+    // Get and update target object
+    state := vm.State()
+    objKey := []byte("object:" + a.IDTo)
+    objBytes, err := state.Get(ctx, objKey)
+    if err != nil {
+        return nil, err
     }
 
-    // 4. Submit and verify task acceptance
-    if err := coord.SubmitTask(ctx, task); err != nil {
-        return nil, fmt.Errorf("coordination failed: %w", err)
+    var obj ObjectState
+    if err := codec.Unmarshal(objBytes, &obj); err != nil {
+        return nil, err
     }
 
-    // 5. Store enhanced event state
+    // Create event record
+    eventID := fmt.Sprintf("%s:%s", a.IDTo, a.Attestations[0].Timestamp)
     event := map[string]interface{}{
         "function_call": a.FunctionCall,
         "parameters":    a.Parameters,
         "attestations": a.Attestations,
-        "task_id":      taskID,
-        "status":       "pending",
-        "workers":      task.WorkerIDs,
         "timestamp":    a.Attestations[0].Timestamp,
-        "coordination": map[string]interface{}{ // Add more coordination metadata
-            "started_at": time.Now().UTC().Format(time.RFC3339),
-            "timeout":    task.Timeout,
-            "retries":   0,
-        },
+        "status":      "pending",
     }
 
     eventBytes, err := codec.Marshal(event)
     if err != nil {
-        // Try to cancel task on error
-        coord.CancelTask(ctx, taskID)
         return nil, err
     }
 
-    // 6. Store in event queue
-    queueKey := []byte(fmt.Sprintf("event:%s:%s", a.Attestations[0].Timestamp, a.IDTo))
-    if err := vm.State().Set(ctx, queueKey, eventBytes); err != nil {
-        // Try to cancel task on error
-        coord.CancelTask(ctx, taskID)
+    // Store event
+    eventKey := []byte("event:" + eventID)
+    if err := state.Set(ctx, eventKey, eventBytes); err != nil {
         return nil, err
     }
 
-    // 7. Return enhanced result
+    // Update object's event list
+    obj.Events = append(obj.Events, eventID)
+    obj.LastUpdated = time.Now().UTC()
+
+    updatedObjBytes, err := codec.Marshal(obj)
+    if err != nil {
+        state.Remove(ctx, eventKey)
+        return nil, err
+    }
+
+    if err := state.Set(ctx, objKey, updatedObjBytes); err != nil {
+        state.Remove(ctx, eventKey)
+        return nil, err
+    }
+
     return &SendEventResult{
         Success:   true,
         IDTo:      a.IDTo,
+        EventID:   eventID,
         StateHash: a.Attestations[0].Data,
         Timestamp: a.Attestations[0].Timestamp,
-        TaskID:    taskID,
-        Status:    "pending", // Add status for tracking
     }, nil
 }
 
@@ -622,78 +319,69 @@ type SetInputObjectAction struct {
 
 func (*SetInputObjectAction) GetTypeID() uint8 { return SetInputObject }
 
+func (*SetInputObjectAction) ComputeUnits(rules chain.Rules) uint64 {
+    return 1
+}
+
 func (a *SetInputObjectAction) Marshal(p *codec.Packer) {
     p.PackString(a.ID)
 }
 
 func UnmarshalSetInputObject(p *codec.Packer) (chain.Action, error) {
     var act SetInputObjectAction
-    id, err := p.UnpackString()
+    
+    var err error
+    act.ID, err = p.UnpackString()
     if err != nil {
         return nil, err
     }
-    act.ID = id
+    
     return &act, nil
 }
 
-func (a *SendEventAction) Verify(ctx context.Context, vm chain.VM) error {
-    // Original verification
-    if exists, err := objectExists(ctx, vm, a.IDTo); err != nil {
+func (a *SetInputObjectAction) Verify(ctx context.Context, vm chain.VM) error {
+    state := vm.State()
+    exists, err := state.Has(ctx, []byte("object:"+a.ID))
+    if err != nil {
         return err
-    } else if !exists {
+    }
+    if !exists {
         return ErrObjectNotFound
     }
-    if len(a.FunctionCall) == 0 || len(a.FunctionCall) > 256 {
-        return ErrInvalidFunction
-    }
-    if len(a.Parameters) > MaxStorageSize {
-        return ErrStorageTooLarge
-    }
-
-    // Verify attestations
-    if err := verifyAttestationPair(a.Attestations); err != nil {
-        return err
-    }
-
-    return validateFunctionExists(ctx, vm, a.IDTo, a.FunctionCall)
+    return nil
 }
 
-
 func (a *SetInputObjectAction) Execute(ctx context.Context, vm chain.VM) (*SetInputObjectResult, error) {
+    state := vm.State()
     key := []byte("input_object")
-    if err := vm.State().Set(ctx, key, []byte(a.ID)); err != nil {
+    if err := state.Set(ctx, key, []byte(a.ID)); err != nil {
         return nil, err
     }
-    return &SetInputObjectResult{ID: a.ID, Success: true}, nil
+    return &SetInputObjectResult{
+        ID:      a.ID,
+        Success: true,
+    }, nil
 }
 
 // Result types
 type CreateObjectResult struct {
-    ID string `json:"id"`
+    ID       string `json:"id"`
+    RegionID string `json:"region_id"`
 }
 
 func (*CreateObjectResult) GetTypeID() uint8 { return CreateObject }
 
 func (r *CreateObjectResult) Marshal(p *codec.Packer) {
     p.PackString(r.ID)
+    p.PackString(r.RegionID)
 }
 
-func UnmarshalCreateObjectResult(p *codec.Packer) (codec.Typed, error) {
-    var res CreateObjectResult
-    id, err := p.UnpackString()
-    if err != nil {
-        return nil, err
-    }
-    res.ID = id
-    return &res, nil
-}
-
-// SendEventResult includes attestation verification results
 type SendEventResult struct {
-    Success    bool   `json:"success"`
-    IDTo       string `json:"id_to"`
-    StateHash  []byte `json:"state_hash"`    // From attestation
-    Timestamp  string `json:"timestamp"`     // From attestation
+    Success   bool   `json:"success"`
+    IDTo      string `json:"id_to"`
+    EventID   string `json:"event_id"`
+    StateHash []byte `json:"state_hash"`
+    Timestamp string `json:"timestamp"`
 }
 
 func (*SendEventResult) GetTypeID() uint8 { return SendEvent }
@@ -701,22 +389,9 @@ func (*SendEventResult) GetTypeID() uint8 { return SendEvent }
 func (r *SendEventResult) Marshal(p *codec.Packer) {
     p.PackBool(r.Success)
     p.PackString(r.IDTo)
-}
-
-func UnmarshalSendEventResult(p *codec.Packer) (codec.Typed, error) {
-    var res SendEventResult
-    success, err := p.UnpackBool()
-    if err != nil {
-        return nil, err
-    }
-    res.Success = success
-
-    idTo, err := p.UnpackString()
-    if err != nil {
-        return nil, err
-    }
-    res.IDTo = idTo
-    return &res, nil
+    p.PackString(r.EventID)
+    p.PackBytes(r.StateHash)
+    p.PackString(r.Timestamp)
 }
 
 type SetInputObjectResult struct {
@@ -731,39 +406,116 @@ func (r *SetInputObjectResult) Marshal(p *codec.Packer) {
     p.PackBool(r.Success)
 }
 
-func UnmarshalSetInputObjectResult(p *codec.Packer) (codec.Typed, error) {
-    var res SetInputObjectResult
-    id, err := p.UnpackString()
-    if err != nil {
-        return nil, err
+// Helper functions
+func validateCode(code []byte) error {
+    if len(code) == 0 {
+        return fmt.Errorf("empty code")
     }
-    res.ID = id
+    // Add basic code validation - can be expanded based on requirements
+    // This is a placeholder for more sophisticated validation
+    if code[0] == 0x00 {
+        return fmt.Errorf("invalid code start byte")
+    }
+    return nil
+}
 
-    success, err := p.UnpackBool()
+func validateFunctionExists(code []byte, functionName string) error {
+    if len(code) == 0 {
+        return fmt.Errorf("empty code")
+    }
+    // Basic function validation - placeholder for actual implementation
+    // Real implementation would parse code and verify function exists
+    return nil
+}
+
+// Task management helper
+func submitTask(
+    ctx context.Context,
+    coord *coordination.Coordinator,
+    task *coordination.Task,
+    maxRetries int,
+) error {
+    var lastErr error
+    for i := 0; i < maxRetries; i++ {
+        if err := coord.SubmitTask(ctx, task); err != nil {
+            lastErr = err
+            time.Sleep(500 * time.Millisecond)
+            continue
+        }
+        return nil
+    }
+    return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// Result handling helpers
+func UnmarshalCreateObjectResult(p *codec.Packer) (codec.Typed, error) {
+    var res CreateObjectResult
+    
+    var err error
+    res.ID, err = p.UnpackString()
     if err != nil {
         return nil, err
     }
-    res.Success = success
+    
+    res.RegionID, err = p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    
     return &res, nil
 }
 
-// Helper functions
-func objectExists(ctx context.Context, vm chain.VM, id string) (bool, error) {
-    key := []byte("object:" + id)
-    return vm.State().Has(ctx, key)
+func UnmarshalSendEventResult(p *codec.Packer) (codec.Typed, error) {
+    var res SendEventResult
+    
+    var err error
+    res.Success, err = p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    
+    res.IDTo, err = p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    
+    res.EventID, err = p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    
+    if err := p.UnpackBytesInto(&res.StateHash); err != nil {
+        return nil, err
+    }
+    
+    res.Timestamp, err = p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    
+    return &res, nil
 }
 
-func validateCode(code []byte) error {
-    return nil
+func UnmarshalSetInputObjectResult(p *codec.Packer) (codec.Typed, error) {
+    var res SetInputObjectResult
+    
+    var err error
+    res.ID, err = p.UnpackString()
+    if err != nil {
+        return nil, err
+    }
+    
+    res.Success, err = p.UnpackBool()
+    if err != nil {
+        return nil, err
+    }
+    
+    return &res, nil
 }
 
-func validateFunctionExists(ctx context.Context, vm chain.VM, objectID, function string) error {
-    return nil
-}
-
-// RegisterActions registers core actions with the auth factory
-func RegisterActions(f *chain.AuthFactory) {
-    f.Register(&CreateObjectAction{}, UnmarshalCreateObject)
-    f.Register(&SendEventAction{}, UnmarshalSendEvent)
-    f.Register(&SetInputObjectAction{}, UnmarshalSetInputObject)
+// Register all actions
+func RegisterActions(authFactory chain.AuthFactory) {
+    authFactory.Register(&CreateObjectAction{}, UnmarshalCreateObject)
+    authFactory.Register(&SendEventAction{}, UnmarshalSendEvent)
+    authFactory.Register(&SetInputObjectAction{}, UnmarshalSetInputObject)
 }

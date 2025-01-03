@@ -13,6 +13,7 @@ import (
    "github.com/rhombus-tech/vm/actions"
    "github.com/rhombus-tech/vm/consts"
    "github.com/rhombus-tech/vm/storage"
+   "github.com/rhombus-tech/hypersdk/coodination"
 )
 
 var (
