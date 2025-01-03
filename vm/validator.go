@@ -13,6 +13,8 @@ var (
     ErrCodeTooLarge      = errors.New("code exceeds size limit")
     ErrInvalidHeader     = errors.New("invalid code header")
     ErrInvalidTEEFormat  = errors.New("code format not supported by TEE")
+    ErrInvalidTEEType    = errors.New("invalid TEE type")
+    ErrInvalidAttestation = errors.New("invalid attestation data")
 )
 
 const (
@@ -23,10 +25,9 @@ const (
 
     // Header magic bytes for verification
     HeaderMagic = "\x00SHUTTLE"
-    HeaderSize  = 16 // Magic (8) + Format (1) + Version (1) + Reserved (6)
+    HeaderSize  = 16 // Magic (8) + Format (1) + Version (1) + TEEType (1) + Reserved (5)
 )
 
-// CodeHeader represents the metadata for code
 type CodeHeader struct {
     Format   uint8    // Code format identifier
     Version  uint8    // Version number for the format
@@ -34,7 +35,6 @@ type CodeHeader struct {
     Reserved [5]byte  // Reserved for future use
 }
 
-// CodeValidator handles validation of code in different formats
 type CodeValidator struct {
     maxSize uint64
     formats map[uint8]FormatValidator
@@ -67,24 +67,19 @@ func NewCodeValidator(maxSize uint64) *CodeValidator {
     return cv
 }
 
-// ValidateCode validates code bytes and returns the format
 func (cv *CodeValidator) ValidateCode(code []byte) error {
-    // Check size
     if uint64(len(code)) > cv.maxSize {
         return ErrCodeTooLarge
     }
 
-    // Must have at least a header
     if len(code) < HeaderSize {
         return ErrInvalidHeader
     }
 
-    // Verify magic bytes
     if !bytes.Equal([]byte(code[:8]), []byte(HeaderMagic)) {
         return ErrInvalidHeader
     }
 
-    // Parse header
     header := &CodeHeader{
         Format:  code[8],
         Version: code[9],
@@ -92,24 +87,26 @@ func (cv *CodeValidator) ValidateCode(code []byte) error {
     }
     copy(header.Reserved[:], code[11:16])
 
+    if !cv.isValidTEEType(header.TEEType) {
+        return ErrInvalidTEEType
+    }
+
+    if !cv.isFormatSupportedByTEE(header.Format, header.TEEType) {
+        return ErrInvalidTEEFormat
+    }
+
     // Get validator for format
     validator, exists := cv.formats[header.Format]
     if !exists {
         return ErrUnsupportedFormat
     }
 
-    // Check if format is supported by TEE type
-    if !cv.isFormatSupportedByTEE(header.Format, header.TEEType) {
-        return ErrInvalidTEEFormat
-    }
+    // Validate format-specific code
+    return validator.Validate(code[HeaderSize:])
+}
 
-    // Validate format-specific code (after header)
-    if err := validator.Validate(code[HeaderSize:]); err != nil {
-        return err
-    }
-
-    // Validate TEE-specific requirements
-    return validator.ValidateForTEE(code[HeaderSize:], header.TEEType)
+func (cv *CodeValidator) isValidTEEType(teeType uint8) bool {
+    return teeType == TEETypeSGX || teeType == TEETypeSEV
 }
 
 // RegisterFormat registers a new format validator

@@ -11,17 +11,19 @@ const Namespace = "morpheusvm"
 type Config struct {
     Enabled bool `json:"enabled"`
     // Add other configuration options
-    MaxObjectSize      uint64 `json:"maxObjectSize"`
-    MaxStorageSize     uint64 `json:"maxStorageSize"`
-    EnableTEEFeatures  bool   `json:"enableTEEFeatures"`
+    MaxObjectSize uint64 `json:"maxObjectSize"`
+    MaxStorageSize uint64 `json:"maxStorageSize"`
+    EnableTEEFeatures bool `json:"enableTEEFeatures"`
+    TEEEndpoint string `json:"teeEndpoint"` // Add TEE endpoint
 }
 
 func NewDefaultConfig() Config {
     return Config{
-        Enabled:          true,
-        MaxObjectSize:    1024 * 1024, // 1MB
-        MaxStorageSize:   1024 * 1024, // 1MB
+        Enabled: true,
+        MaxObjectSize: 1024 * 1024, // 1MB
+        MaxStorageSize: 1024 * 1024, // 1MB
         EnableTEEFeatures: true,
+        TEEEndpoint: "localhost:50051", // Default TEE endpoint
     }
 }
 
@@ -34,20 +36,27 @@ func WithCustomOptions(config Config) vm.Option {
             if !cfg.Enabled {
                 return nil, nil
             }
-            
+
             // Configure VM with options
             opts := []vm.Opt{
                 vm.WithVMAPIs(NewJSONRPCServer(v)),
             }
-            
+
             // Add TEE features if enabled
             if cfg.EnableTEEFeatures {
+                // Create TEE state manager
+                sm, err := NewTEEStateManager(v.State, cfg.TEEEndpoint)
+                if err != nil {
+                    return nil, err
+                }
+
                 opts = append(opts,
+                    vm.WithState(sm),
                     vm.WithBlockSubscriptions(NewTEEVerifier()),
                     vm.WithTxRemovedSubscriptions(NewTEECleanup()),
                 )
             }
-            
+
             return vm.NewOpt(opts...), nil
         },
     )

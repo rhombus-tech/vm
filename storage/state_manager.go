@@ -5,12 +5,15 @@ package storage
 import (
     "context"
     "fmt"
+    "time"
 
     "github.com/ava-labs/hypersdk/chain"
     "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/state"
+    "github.com/ava-labs/hypersdk/coordination"
     
     "github.com/rhombus-tech/vm/actions"
+    "github.com/rhombus-tech/vm/tee"  // Add TEE package
 )
 
 const (
@@ -22,8 +25,22 @@ const (
 
 var _ (chain.StateManager) = (*StateManager)(nil)
 
-type StateManager struct{
+type StateManager struct {
     coordinator *coordination.Coordinator
+    teeClient   *tee.Client  // Add TEE client
+}
+
+// NewStateManager creates a new state manager with TEE support
+func NewStateManager(coord *coordination.Coordinator, teeEndpoint string) (*StateManager, error) {
+    teeClient, err := tee.NewClient(teeEndpoint)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create TEE client: %w", err)
+    }
+
+    return &StateManager{
+        coordinator: coord,
+        teeClient:   teeClient,
+    }, nil
 }
 
 // Existing methods
@@ -197,12 +214,17 @@ func (sm *StateManager) VerifyStateTransition(ctx context.Context, action chain.
     return nil
 }
 
+// Update verifyRegionalEvent to include TEE execution
 func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *actions.SendEventAction) error {
-    // Get workers for region
+    // First execute in TEEs
+    if err := sm.teeClient.ExecuteAction(ctx, event); err != nil {
+        return fmt.Errorf("TEE execution failed: %w", err)
+    }
+    
+    // Then do coordination
     workers := sm.coordinator.GetWorkerIDs()
     regWorkers := filterWorkersForRegion(workers, event.RegionID)
     
-    // Create coordination task
     task := &coordination.Task{
         ID:           event.IDTo,
         WorkerIDs:    regWorkers,
@@ -211,11 +233,20 @@ func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *actions.
         Timeout:      5 * time.Second,
     }
 
-    // Submit for coordination
     if err := sm.coordinator.SubmitTask(ctx, task); err != nil {
         return fmt.Errorf("coordination failed: %w", err)
     }
 
+    return nil
+}
+
+// Add cleanup method
+func (sm *StateManager) Close() error {
+    if sm.teeClient != nil {
+        if err := sm.teeClient.Close(); err != nil {
+            return fmt.Errorf("failed to close TEE client: %w", err)
+        }
+    }
     return nil
 }
 
@@ -228,4 +259,8 @@ func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
         string([]byte(RegionPrefix + id)): state.Read | state.Write,  // Add this
     }
     return keys
+}
+
+func (sm *StateManager) GetCoordinator() *coordination.Coordinator {
+    return sm.coordinator
 }

@@ -143,13 +143,20 @@ func WithConfig(config *Config) vm.Option {
    }
 }
 
+func (v *VM) Coordinator() *coordination.Coordinator {
+    if stateManager, ok := v.State().(*storage.StateManager); ok {
+        return stateManager.GetCoordinator()
+    }
+    return nil
+}
+
 // New creates a new VM with default configuration
 func New(options ...vm.Option) (*vm.VM, error) {
-    // Add default options
+    // Add TEE options
     options = append(options, 
         With(),
-        vm.WithBuilder(),  // Enable block building
-        vm.WithGossiper(), // Enable gossip
+        vm.WithBuilder(),
+        vm.WithGossiper(),
     )
     
     return defaultvm.New(

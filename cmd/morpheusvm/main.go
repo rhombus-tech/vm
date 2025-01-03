@@ -47,9 +47,11 @@ func runFunc(*cobra.Command, []string) error {
 		return fmt.Errorf("%w: failed to set fd limit correctly", err)
 	}
 
-	vm, err := vm.New()
-	if err != nil {
-		return err
-	}
-	return rpcchainvm.Serve(context.TODO(), vm)
+	vm, err := vm.New(
+        vm.WithTEE(os.Getenv("TEE_ENDPOINT")), // Add TEE option
+    )
+    if err != nil {
+        return err
+    }
+    return rpcchainvm.Serve(context.TODO(), vm)
 }

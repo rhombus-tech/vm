@@ -1,6 +1,7 @@
 package consts
 
 const (
+    // Existing constants
     TransferID                   uint8 = 0
     ContractVerificationID       uint8 = 1
     ContractVerificationResultID uint8 = 2
@@ -14,9 +15,14 @@ const (
     SendEventResultID          uint8 = 10
     CreateRegionResultID       uint8 = 11
     UpdateRegionResultID       uint8 = 12
+
+    // New TEE-related IDs
+    ExecutionResultID         uint8 = 13
+    AttestationReportID      uint8 = 14
 )
 
 var (
+    // Existing errors
     ErrObjectExists     = "object already exists"
     ErrObjectNotFound   = "object not found"
     ErrInvalidID        = "invalid object ID"
@@ -26,20 +32,21 @@ var (
     ErrRegionExists     = "region already exists"
     ErrRegionNotFound   = "region not found"
     ErrInvalidTEE       = "invalid TEE address"
-    // New attestation errors
-    ErrMissingAttestation    = "missing TEE attestation"
-    ErrInvalidAttestation    = "invalid TEE attestation"
-    ErrAttestationMismatch   = "attestation pair mismatch"
-    ErrInvalidTimestamp      = "invalid Roughtime stamp"
-    ErrStaleTimestamp        = "timestamp outside valid window"
-    ErrInvalidRegionExec     = "invalid regional execution"
+    
+    // New TEE-related errors
+    ErrTEEConnectionFailed  = "failed to connect to TEE service"
+    ErrTEEExecutionFailed  = "TEE execution failed"
+    ErrInvalidAttestation   = "invalid attestation"
+    ErrAttestationMismatch = "attestation mismatch"
+    ErrStaleTimestamp      = "timestamp outside valid window"
+    ErrInvalidTimestamp    = "invalid Roughtime stamp"
 )
-// Define attestation types
-type AttestationType uint8
 
+// TEE platform types
 const (
-    AttestationSGX AttestationType = iota
-    AttestationSEV
+    TEEPlatformSGX uint8 = iota
+    TEEPlatformSEV
 )
+
 // Maximum allowed drift for Roughtime stamps
 const MaxTimeDrift = 5 * 60 // 5 minutes in seconds
