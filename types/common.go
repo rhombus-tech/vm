@@ -1,21 +1,34 @@
+// types/common.go
 package types
 
-import "time"
+import (
+    "time"
+)
+
+type TEEAddress []byte
 
 type ObjectState struct {
-    Code        []byte    `json:"code"`
-    Storage     []byte    `json:"storage"`
-    RegionID    string    `json:"region_id"`
-    Events      []string  `json:"events"`
-    LastUpdated time.Time `json:"last_updated"`
-    Status      string    `json:"status"`
+    Code        []byte
+    Storage     []byte
+    RegionID    string
+    Events      []string
+    LastUpdated time.Time
+    Status      string
+}
+
+type Event struct {
+    FunctionCall string
+    Parameters   []byte
+    Attestations [2]TEEAttestation
+    Timestamp    string
+    Status      string
 }
 
 type TEEAttestation struct {
-    EnclaveID   []byte `json:"enclave_id"`
-    Measurement []byte `json:"measurement"`
-    Timestamp   string `json:"timestamp"`
-    Data        []byte `json:"data"`
-    Signature   []byte `json:"signature"`
-    RegionProof []byte `json:"region_proof"`
+    EnclaveID   []byte
+    Measurement []byte
+    Timestamp   string
+    Data        []byte
+    Signature   []byte
+    RegionProof []byte
 }

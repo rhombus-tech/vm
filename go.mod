@@ -1,4 +1,4 @@
-module github.com/ava-labs/hypersdk-starter-kit
+module github.com/rhombus-tech/vm
 
 go 1.22.5
 
@@ -8,10 +8,16 @@ require (
 	github.com/fatih/color v1.13.0
 	github.com/gorilla/mux v1.8.0
 	github.com/onsi/ginkgo/v2 v2.13.1
+	github.com/rhombus-tech/hypersdk v0.1.0
 	github.com/rs/cors v1.7.0
 	github.com/spf13/cobra v1.7.0
 	github.com/stretchr/testify v1.8.4
 	golang.org/x/time v0.3.0
+)
+
+replace (
+	github.com/rhombus-tech/hypersdk => github.com/rhombus-tech/hypersdk v0.0.0-20240311-1b0cf670fb4b
+	github.com/rhombus-tech/vm => github.com/rhombus-tech/vm v0.0.0-20240311-4a8c0ae507a3
 )
 
 require (

@@ -12,10 +12,12 @@ import (
     "github.com/ava-labs/hypersdk/state"
     "github.com/rhombus-tech/hypersdk/coordination"
     
-    "github.com/rhombus-tech/vm/actions"
-    "github.com/rhombus-tech/vm/tee"  // Add TEE package
+    "github.com/rhombus-tech/vm"      // For interfaces
+    "github.com/rhombus-tech/vm/types"
+    "github.com/rhombus-tech/vm/tee"  
 )
 
+// Constants for state key prefixes
 const (
     ObjectPrefix = "object:"
     EventPrefix  = "event:"
@@ -23,14 +25,17 @@ const (
     RegionPrefix = "region:"
 )
 
-var _ (chain.StateManager) = (*StateManager)(nil)
+// Interface verification
+var _ chain.StateManager = (*StateManager)(nil)
+var _ vm.StateManager = (*StateManager)(nil)
 
+// StateManager structure
 type StateManager struct {
     coordinator *coordination.Coordinator
-    teeClient   *tee.Client  // Add TEE client
+    teeClient   *tee.Client
 }
 
-// NewStateManager creates a new state manager with TEE support
+// Constructor
 func NewStateManager(coord *coordination.Coordinator, teeEndpoint string) (*StateManager, error) {
     teeClient, err := tee.NewClient(teeEndpoint)
     if err != nil {
@@ -43,7 +48,7 @@ func NewStateManager(coord *coordination.Coordinator, teeEndpoint string) (*Stat
     }, nil
 }
 
-// Existing methods
+// Base chain.StateManager implementations
 func (*StateManager) HeightKey() []byte {
     return HeightKey()
 }
@@ -99,8 +104,8 @@ func (*StateManager) AddBalance(
     return err
 }
 
-// GetObject retrieves an object from state
-func (*StateManager) GetObject(ctx context.Context, mu state.Immutable, id string) (map[string][]byte, error) {
+// Object management implementations
+func (*StateManager) GetObject(ctx context.Context, mu state.Immutable, id string) (*types.ObjectState, error) {
     key := []byte(ObjectPrefix + id)
     objBytes, err := mu.GetValue(ctx, key)
     if err != nil {
@@ -110,16 +115,15 @@ func (*StateManager) GetObject(ctx context.Context, mu state.Immutable, id strin
         return nil, nil
     }
 
-    var obj map[string][]byte
+    var obj types.ObjectState
     if err := codec.Unmarshal(objBytes, &obj); err != nil {
         return nil, err
     }
 
-    return obj, nil
+    return &obj, nil
 }
 
-// SetObject stores an object in state
-func (*StateManager) SetObject(ctx context.Context, mu state.Mutable, id string, obj map[string][]byte) error {
+func (*StateManager) SetObject(ctx context.Context, mu state.Mutable, id string, obj *types.ObjectState) error {
     key := []byte(ObjectPrefix + id)
     objBytes, err := codec.Marshal(obj)
     if err != nil {
@@ -129,18 +133,15 @@ func (*StateManager) SetObject(ctx context.Context, mu state.Mutable, id string,
     return mu.SetValue(ctx, key, objBytes)
 }
 
-// QueueEvent adds an event to the state
-func (*StateManager) QueueEvent(ctx context.Context, mu state.Mutable, event *actions.SendEventAction) error {
-    // Use attestation timestamp instead of calling roughtime directly
-    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, event.Attestations[0].Timestamp, event.IDTo))
-    
-    eventData := map[string]interface{}{
-        "function_call": event.FunctionCall,
-        "parameters":    event.Parameters,
-        "attestations": event.Attestations,
-    }
+func (*StateManager) ObjectExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
+    key := []byte(ObjectPrefix + id)
+    return im.HasValue(ctx, key)
+}
 
-    eventBytes, err := codec.Marshal(eventData)
+// Event management implementations
+func (*StateManager) SetEvent(ctx context.Context, mu state.Mutable, id string, event *types.Event) error {
+    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, event.Timestamp, id))
+    eventBytes, err := codec.Marshal(event)
     if err != nil {
         return err
     }
@@ -148,7 +149,24 @@ func (*StateManager) QueueEvent(ctx context.Context, mu state.Mutable, event *ac
     return mu.SetValue(ctx, key, eventBytes)
 }
 
-// GetInputObject retrieves the current input object ID
+func (*StateManager) GetEvent(ctx context.Context, im state.Immutable, timestamp string, id string) (*types.Event, error) {
+    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, timestamp, id))
+    eventBytes, err := im.GetValue(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if eventBytes == nil {
+        return nil, nil
+    }
+
+    var event types.Event
+    if err := codec.Unmarshal(eventBytes, &event); err != nil {
+        return nil, err
+    }
+    return &event, nil
+}
+
+// Input object management
 func (*StateManager) GetInputObject(ctx context.Context, im state.Immutable) (string, error) {
     inputBytes, err := im.GetValue(ctx, []byte(InputObject))
     if err != nil {
@@ -160,18 +178,11 @@ func (*StateManager) GetInputObject(ctx context.Context, im state.Immutable) (st
     return string(inputBytes), nil
 }
 
-// SetInputObject sets the current input object ID
 func (*StateManager) SetInputObject(ctx context.Context, mu state.Mutable, id string) error {
     return mu.SetValue(ctx, []byte(InputObject), []byte(id))
 }
 
-// Helper functions for object state management
-func (*StateManager) ObjectExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
-    key := []byte(ObjectPrefix + id)
-    return im.HasValue(ctx, key)
-}
-
-// GetRegion retrieves a region from state
+// Region management implementations
 func (*StateManager) GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]interface{}, error) {
     key := []byte(RegionPrefix + id)
     regionBytes, err := im.GetValue(ctx, key)
@@ -189,7 +200,6 @@ func (*StateManager) GetRegion(ctx context.Context, im state.Immutable, id strin
     return region, nil
 }
 
-// SetRegion stores a region in state
 func (*StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error {
     key := []byte(RegionPrefix + id)
     regionBytes, err := codec.Marshal(region)
@@ -199,23 +209,119 @@ func (*StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string,
     return mu.SetValue(ctx, key, regionBytes)
 }
 
-// RegionExists checks if a region exists
 func (*StateManager) RegionExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
     key := []byte(RegionPrefix + id)
     return im.HasValue(ctx, key)
 }
 
+// State keys helper
+func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
+    keys := state.Keys{
+        string([]byte(ObjectPrefix + id)): state.Read | state.Write,
+        string([]byte(EventPrefix + id)): state.Read | state.Write,
+        string([]byte(InputObject)): state.Read | state.Write,
+        string([]byte(RegionPrefix + id)): state.Read | state.Write,
+    }
+    return keys
+}// Event management implementations
+func (*StateManager) SetEvent(ctx context.Context, mu state.Mutable, id string, event *types.Event) error {
+    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, event.Timestamp, id))
+    eventBytes, err := codec.Marshal(event)
+    if err != nil {
+        return err
+    }
+
+    return mu.SetValue(ctx, key, eventBytes)
+}
+
+func (*StateManager) GetEvent(ctx context.Context, im state.Immutable, timestamp string, id string) (*types.Event, error) {
+    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, timestamp, id))
+    eventBytes, err := im.GetValue(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if eventBytes == nil {
+        return nil, nil
+    }
+
+    var event types.Event
+    if err := codec.Unmarshal(eventBytes, &event); err != nil {
+        return nil, err
+    }
+    return &event, nil
+}
+
+// Input object management
+func (*StateManager) GetInputObject(ctx context.Context, im state.Immutable) (string, error) {
+    inputBytes, err := im.GetValue(ctx, []byte(InputObject))
+    if err != nil {
+        return "", err
+    }
+    if inputBytes == nil {
+        return "", nil
+    }
+    return string(inputBytes), nil
+}
+
+func (*StateManager) SetInputObject(ctx context.Context, mu state.Mutable, id string) error {
+    return mu.SetValue(ctx, []byte(InputObject), []byte(id))
+}
+
+// Region management implementations
+func (*StateManager) GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]interface{}, error) {
+    key := []byte(RegionPrefix + id)
+    regionBytes, err := im.GetValue(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    if regionBytes == nil {
+        return nil, nil
+    }
+
+    var region map[string]interface{}
+    if err := codec.Unmarshal(regionBytes, &region); err != nil {
+        return nil, err
+    }
+    return region, nil
+}
+
+func (*StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error {
+    key := []byte(RegionPrefix + id)
+    regionBytes, err := codec.Marshal(region)
+    if err != nil {
+        return err
+    }
+    return mu.SetValue(ctx, key, regionBytes)
+}
+
+func (*StateManager) RegionExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
+    key := []byte(RegionPrefix + id)
+    return im.HasValue(ctx, key)
+}
+
+// State keys helper
+func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
+    keys := state.Keys{
+        string([]byte(ObjectPrefix + id)): state.Read | state.Write,
+        string([]byte(EventPrefix + id)): state.Read | state.Write,
+        string([]byte(InputObject)): state.Read | state.Write,
+        string([]byte(RegionPrefix + id)): state.Read | state.Write,
+    }
+    return keys
+}
+
+// State transition verification
 func (sm *StateManager) VerifyStateTransition(ctx context.Context, action chain.Action) error {
     switch a := action.(type) {
-    case *actions.SendEventAction:
+    case *types.SendEventAction:  // Updated to use types package
         // Verify region coordination
         return sm.verifyRegionalEvent(ctx, a)
     }
     return nil
 }
 
-// Update verifyRegionalEvent to include TEE execution
-func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *actions.SendEventAction) error {
+// TEE and coordination logic
+func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *types.SendEventAction) error {
     // First execute in TEEs
     if err := sm.teeClient.ExecuteAction(ctx, event); err != nil {
         return fmt.Errorf("TEE execution failed: %w", err)
@@ -240,7 +346,33 @@ func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *actions.
     return nil
 }
 
-// Add cleanup method
+// Helper function to filter workers for a specific region
+func filterWorkersForRegion(workers []coordination.WorkerID, regionID string) []coordination.WorkerID {
+    var regWorkers []coordination.WorkerID
+    for _, worker := range workers {
+        // Add your region filtering logic here
+        // For example, check if worker belongs to the region
+        if isWorkerInRegion(worker, regionID) {
+            regWorkers = append(regWorkers, worker)
+        }
+    }
+    return regWorkers
+}
+
+// Helper function to check if a worker belongs to a region
+func isWorkerInRegion(workerID coordination.WorkerID, regionID string) bool {
+    // Implement your worker-region mapping logic here
+    // This could involve checking a mapping stored in state
+    // or using a naming convention for worker IDs
+    return true // Placeholder implementation
+}
+
+// Coordinator access
+func (sm *StateManager) GetCoordinator() *coordination.Coordinator {
+    return sm.coordinator
+}
+
+// Cleanup
 func (sm *StateManager) Close() error {
     if sm.teeClient != nil {
         if err := sm.teeClient.Close(); err != nil {
@@ -248,19 +380,4 @@ func (sm *StateManager) Close() error {
         }
     }
     return nil
-}
-
-// Additional state keys for ShuttleVM actions
-func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
-    keys := state.Keys{
-        string([]byte(ObjectPrefix + id)): state.Read | state.Write,
-        string([]byte(EventPrefix + id)): state.Read | state.Write,
-        string([]byte(InputObject)): state.Read | state.Write,
-        string([]byte(RegionPrefix + id)): state.Read | state.Write,  // Add this
-    }
-    return keys
-}
-
-func (sm *StateManager) GetCoordinator() *coordination.Coordinator {
-    return sm.coordinator
 }

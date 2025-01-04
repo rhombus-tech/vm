@@ -472,6 +472,52 @@ func SetInputObject(
    return mu.Insert(ctx, k, []byte(id))
 }
 
+type ObjectState struct {
+    Code        []byte    `json:"code"`
+    Storage     []byte    `json:"storage"`
+    RegionID    string    `json:"region_id"`
+    Events      []string  `json:"events"`
+    LastUpdated time.Time `json:"last_updated"`
+    Status      string    `json:"status"`
+}
+
+// Update GetObject to return ObjectState
+func GetObject(
+    ctx context.Context,
+    im state.Immutable,
+    id string,
+) (*ObjectState, error) {
+    k := ObjectKey(id)
+    v, err := im.GetValue(ctx, k)
+    if errors.Is(err, database.ErrNotFound) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+
+    var obj ObjectState
+    if err := codec.Unmarshal(v, &obj); err != nil {
+        return nil, err
+    }
+    return &obj, nil
+}
+
+// Update SetObject to take ObjectState
+func SetObject(
+    ctx context.Context,
+    mu state.Mutable,
+    id string,
+    obj *ObjectState,
+) error {
+    k := ObjectKey(id)
+    v, err := codec.Marshal(obj)
+    if err != nil {
+        return err
+    }
+    return mu.Insert(ctx, k, v)
+}
+
 func RegionKey(id string) []byte {
     k := make([]byte, 1+len(id))
     k[0] = regionPrefix

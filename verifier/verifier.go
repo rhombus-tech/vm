@@ -6,6 +6,7 @@ import (
    "context"
    "errors"
    "fmt"
+   "bytes"
 
    "github.com/ava-labs/hypersdk/chain"
    "github.com/ava-labs/hypersdk/state"
@@ -13,7 +14,7 @@ import (
    "github.com/rhombus-tech/vm/actions"
    "github.com/rhombus-tech/vm/consts"
    "github.com/rhombus-tech/vm/storage"
-   "github.com/rhombus-tech/hypersdk/coodination"
+   "github.com/rhombus-tech/hypersdk/coordination"
 )
 
 var (

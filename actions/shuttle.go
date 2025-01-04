@@ -14,8 +14,9 @@ import (
     "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/state"
     
-    "github.com/ava-labs/hypersdk-starter-kit/storage"
-    "github.com/ava-labs/hypersdk-starter-kit/consts"
+    "github.com/rhombus-tech/vm"         
+    "github.com/rhombus-tech/vm/types"
+    "github.com/rhombus-tech/vm/consts"
     "github.com/rhombus-tech/hypersdk/coordination"
 )
 
@@ -26,10 +27,6 @@ var (
     ErrInvalidFunction = errors.New("invalid function call")
     ErrCodeTooLarge    = errors.New("code size exceeds maximum")  
     ErrStorageTooLarge = errors.New("storage size exceeds maximum")
-    
-    _ chain.Action = (*CreateObjectAction)(nil)
-    _ chain.Action = (*SendEventAction)(nil)
-    _ chain.Action = (*SetInputObjectAction)(nil)
 )
 
 const (
@@ -38,16 +35,17 @@ const (
     MaxIDLength    = 256
 )
 
-// Core types
-type ObjectState struct {
-    Code        []byte            `serialize:"true" json:"code"`
-    Storage     []byte            `serialize:"true" json:"storage"`
-    RegionID    string           `serialize:"true" json:"region_id"`
-    Events      []string         `serialize:"true" json:"events"`
-    LastUpdated time.Time        `serialize:"true" json:"last_updated"`
-    Status      string           `serialize:"true" json:"status"`
-}
+// Ensure implementations
+var (
+    _ chain.Action = (*CreateObjectAction)(nil)
+    _ chain.Action = (*SendEventAction)(nil)
+    _ chain.Action = (*SetInputObjectAction)(nil)
+    _ codec.Typed = (*CreateObjectResult)(nil)
+    _ codec.Typed = (*SendEventResult)(nil)
+    _ codec.Typed = (*SetInputObjectResult)(nil)
+)
 
+// Action types
 type CreateObjectAction struct {
     ID       string `serialize:"true" json:"id"`
     Code     []byte `serialize:"true" json:"code"`
@@ -55,14 +53,68 @@ type CreateObjectAction struct {
     RegionID string `serialize:"true" json:"region_id"`
 }
 
-func (*CreateObjectAction) GetTypeID() uint8 { 
-    return mconsts.CreateObjectID 
+type SendEventAction struct {
+    IDTo         string                  `serialize:"true" json:"id_to"`
+    FunctionCall string                  `serialize:"true" json:"function_call"`
+    Parameters   []byte                  `serialize:"true" json:"parameters"`
+    Attestations [2]types.TEEAttestation `serialize:"true" json:"attestations"`
+    RegionID     string                  `serialize:"true" json:"region_id"`
 }
 
-func (c *CreateObjectAction) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
+type SetInputObjectAction struct {
+    ID string `serialize:"true" json:"id"`
+}
+
+// Result types
+type CreateObjectResult struct {
+    ID       string `serialize:"true" json:"id"`
+    RegionID string `serialize:"true" json:"region_id"`
+}
+
+type SendEventResult struct {
+    Success   bool   `serialize:"true" json:"success"`
+    IDTo      string `serialize:"true" json:"id_to"`
+    EventID   string `serialize:"true" json:"event_id"`
+    StateHash []byte `serialize:"true" json:"state_hash"`
+    Timestamp string `serialize:"true" json:"timestamp"`
+}
+
+type SetInputObjectResult struct {
+    ID      string `serialize:"true" json:"id"`
+    Success bool   `serialize:"true" json:"success"`
+}
+
+// Type ID implementations for actions
+func (*CreateObjectAction) GetTypeID() uint8 { 
+    return consts.CreateObjectID 
+}
+
+func (*SendEventAction) GetTypeID() uint8 { 
+    return consts.SendEventID 
+}
+
+func (*SetInputObjectAction) GetTypeID() uint8 { 
+    return consts.SetInputObjectID 
+}
+
+// Type ID implementations for results
+func (*CreateObjectResult) GetTypeID() uint8 { 
+    return consts.CreateObjectResultID 
+}
+
+func (*SendEventResult) GetTypeID() uint8 { 
+    return consts.SendEventResultID 
+}
+
+func (*SetInputObjectResult) GetTypeID() uint8 { 
+    return consts.SetInputObjectResultID 
+}
+
+// StateKeys implementation for CreateObjectAction
+func (c *CreateObjectAction) StateKeys(actor codec.Address) state.Keys {
     return state.Keys{
-        string(storage.ObjectKey(c.ID)): state.Write,
-        string(storage.RegionKey(c.RegionID)): state.Read,
+        string([]byte("object:" + c.ID)): state.Write,
+        string([]byte("region:" + c.RegionID)): state.Read,
     }
 }
 
@@ -74,7 +126,9 @@ func (c *CreateObjectAction) Execute(
     actor codec.Address,
     txID ids.ID,
 ) (codec.Typed, error) {
-    // Verify inputs (from your previous Verify logic)
+    stateManager := mu.(vm.StateManager)
+    
+    // Validate inputs
     if len(c.ID) == 0 || len(c.ID) > MaxIDLength {
         return nil, ErrInvalidID
     }
@@ -86,7 +140,7 @@ func (c *CreateObjectAction) Execute(
     }
 
     // Verify region exists
-    region, err := storage.GetRegion(ctx, mu, c.RegionID)
+    region, err := stateManager.GetRegion(ctx, mu, c.RegionID)
     if err != nil {
         return nil, err
     }
@@ -95,7 +149,7 @@ func (c *CreateObjectAction) Execute(
     }
 
     // Check if object already exists
-    exists, err := storage.ObjectExists(ctx, mu, c.ID)
+    exists, err := stateManager.ObjectExists(ctx, mu, c.ID)
     if err != nil {
         return nil, err
     }
@@ -107,18 +161,18 @@ func (c *CreateObjectAction) Execute(
         return nil, err
     }
 
-    // Create object state (from your previous Execute logic)
-    obj := ObjectState{
+    // Create object state
+    obj := &types.ObjectState{
         Code:        c.Code,
         Storage:     c.Storage,
         RegionID:    c.RegionID,
         Events:      make([]string, 0),
-        LastUpdated: time.Unix(timestamp, 0).UTC(),
+        LastUpdated: time.Unix(timestamp, 0).UTC().Format(time.RFC3339),
         Status:      "active",
     }
 
-    // Store object
-    if err := storage.SetObject(ctx, mu, c.ID, &obj); err != nil {
+    // Store object using state manager
+    if err := stateManager.SetObject(ctx, mu, c.ID, obj); err != nil {
         return nil, err
     }
 
@@ -136,21 +190,11 @@ func (c *CreateObjectAction) ValidRange(chain.Rules) (int64, int64) {
     return -1, -1
 }
 
-type SendEventAction struct {
-    IDTo         string           `serialize:"true" json:"id_to"`
-    FunctionCall string           `serialize:"true" json:"function_call"`
-    Parameters   []byte           `serialize:"true" json:"parameters"`
-    Attestations [2]TEEAttestation `serialize:"true" json:"attestations"`
-}
-
-func (*SendEventAction) GetTypeID() uint8 { 
-    return mconsts.SendEventID 
-}
-
-func (s *SendEventAction) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
+// StateKeys implementation for SendEventAction
+func (s *SendEventAction) StateKeys(actor codec.Address) state.Keys {
     return state.Keys{
-        string(storage.ObjectKey(s.IDTo)): state.Read | state.Write,
-        string(storage.EventKey(s.Attestations[0].Timestamp, s.IDTo)): state.Write,
+        string([]byte("object:" + s.IDTo)): state.Read | state.Write,
+        string([]byte(fmt.Sprintf("event:%s:%s", s.Attestations[0].Timestamp, s.IDTo))): state.Write,
     }
 }
 
@@ -162,8 +206,10 @@ func (s *SendEventAction) Execute(
     actor codec.Address,
     txID ids.ID,
 ) (codec.Typed, error) {
+    stateManager := mu.(vm.StateManager)
+
     // Get target object
-    obj, err := storage.GetObject(ctx, mu, s.IDTo)
+    obj, err := stateManager.GetObject(ctx, mu, s.IDTo)
     if err != nil {
         return nil, err
     }
@@ -180,7 +226,7 @@ func (s *SendEventAction) Execute(
     }
 
     // Get region for TEE verification
-    region, err := storage.GetRegion(ctx, mu, obj.RegionID)
+    region, err := stateManager.GetRegion(ctx, mu, obj.RegionID)
     if err != nil {
         return nil, err
     }
@@ -189,7 +235,7 @@ func (s *SendEventAction) Execute(
     }
 
     // Verify workers are authorized for the region
-    tees := region["tees"].([]TEEAddress)
+    tees := region["tees"].([]types.TEEAddress)
     for _, att := range s.Attestations {
         found := false
         for _, tee := range tees {
@@ -210,24 +256,27 @@ func (s *SendEventAction) Execute(
 
     // Create event record
     eventID := fmt.Sprintf("%s:%s", s.IDTo, s.Attestations[0].Timestamp)
-    event := map[string]interface{}{
-        "function_call": s.FunctionCall,
-        "parameters":    s.Parameters,
-        "attestations": s.Attestations,
-        "timestamp":    s.Attestations[0].Timestamp,
-        "status":      "pending",
+    event := &types.Event{
+        FunctionCall: s.FunctionCall,
+        Parameters:   s.Parameters,
+        Attestations: s.Attestations,
+        Timestamp:    s.Attestations[0].Timestamp,
+        Status:      "pending",
     }
 
-    // Store event
-    if err := storage.SetEvent(ctx, mu, eventID, event); err != nil {
+    // Store event using state manager
+    if err := stateManager.SetEvent(ctx, mu, eventID, event); err != nil {
         return nil, err
     }
 
     // Update object's event list
+    if obj.Events == nil {
+        obj.Events = make([]string, 0)
+    }
     obj.Events = append(obj.Events, eventID)
-    obj.LastUpdated = time.Unix(timestamp, 0).UTC()
+    obj.LastUpdated = time.Unix(timestamp, 0).UTC().Format(time.RFC3339)
 
-    if err := storage.SetObject(ctx, mu, s.IDTo, obj); err != nil {
+    if err := stateManager.SetObject(ctx, mu, s.IDTo, obj); err != nil {
         return nil, err
     }
 
@@ -248,9 +297,59 @@ func (s *SendEventAction) ValidRange(chain.Rules) (int64, int64) {
     return -1, -1
 }
 
-// Helper function for attestation verification
-func verifyAttestationPair(attestations [2]TEEAttestation) error {
-    // Verify both attestations exist
+// StateKeys implementation for SetInputObjectAction
+func (s *SetInputObjectAction) StateKeys(actor codec.Address) state.Keys {
+    return state.Keys{
+        string([]byte("input_object")): state.Write,
+        string([]byte("object:" + s.ID)): state.Read,
+    }
+}
+
+func (s *SetInputObjectAction) Execute(
+    ctx context.Context,
+    rules chain.Rules,
+    mu state.Mutable,
+    timestamp int64,
+    actor codec.Address,
+    txID ids.ID,
+) (codec.Typed, error) {
+    stateManager := mu.(vm.StateManager)
+
+    if len(s.ID) == 0 || len(s.ID) > MaxIDLength {
+        return nil, ErrInvalidID
+    }
+
+    // Verify object exists
+    exists, err := stateManager.ObjectExists(ctx, mu, s.ID)
+    if err != nil {
+        return nil, err
+    }
+    if !exists {
+        return nil, ErrObjectNotFound
+    }
+
+    // Set input object using state manager
+    if err := stateManager.SetInputObject(ctx, mu, s.ID); err != nil {
+        return nil, err
+    }
+
+    return &SetInputObjectResult{
+        ID:      s.ID,
+        Success: true,
+    }, nil
+}
+
+func (*SetInputObjectAction) ComputeUnits(chain.Rules) uint64 {
+    return 1
+}
+
+func (*SetInputObjectAction) ValidRange(chain.Rules) (int64, int64) {
+    return -1, -1
+}
+
+// Helper functions
+func verifyAttestationPair(attestations [2]types.TEEAttestation) error {
+    // Verify both attestations exist and have valid enclave IDs
     if len(attestations[0].EnclaveID) == 0 || len(attestations[1].EnclaveID) == 0 {
         return ErrMissingAttestation
     }
@@ -270,7 +369,7 @@ func verifyAttestationPair(attestations [2]TEEAttestation) error {
         return ErrMissingAttestation
     }
 
-    // Verify signatures
+    // Verify signatures are present
     if len(attestations[0].Signature) == 0 || len(attestations[1].Signature) == 0 {
         return ErrMissingAttestation
     }
@@ -278,93 +377,7 @@ func verifyAttestationPair(attestations [2]TEEAttestation) error {
     return nil
 }
 
-type SetInputObjectAction struct {
-    ID string `serialize:"true" json:"id"`
-}
-
-func (*SetInputObjectAction) GetTypeID() uint8 { 
-    return mconsts.SetInputObjectID 
-}
-
-func (s *SetInputObjectAction) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
-    return state.Keys{
-        string(storage.InputObjectKey()): state.Write,
-        string(storage.ObjectKey(s.ID)): state.Read,
-    }
-}
-
-func (s *SetInputObjectAction) Execute(
-    ctx context.Context,
-    rules chain.Rules,
-    mu state.Mutable,
-    timestamp int64,
-    actor codec.Address,
-    txID ids.ID,
-) (codec.Typed, error) {
-    if len(s.ID) == 0 || len(s.ID) > MaxIDLength {
-        return nil, ErrInvalidID
-    }
-
-    // Verify object exists
-    exists, err := storage.ObjectExists(ctx, mu, s.ID)
-    if err != nil {
-        return nil, err
-    }
-    if !exists {
-        return nil, ErrObjectNotFound
-    }
-
-    // Set input object
-    if err := storage.SetInputObject(ctx, mu, s.ID); err != nil {
-        return nil, err
-    }
-
-    return &SetInputObjectResult{
-        ID:      s.ID,
-        Success: true,
-    }, nil
-}
-
-func (*SetInputObjectAction) ComputeUnits(chain.Rules) uint64 {
-    return 1
-}
-
-func (*SetInputObjectAction) ValidRange(chain.Rules) (int64, int64) {
-    return -1, -1
-}
-
-// Result types
-type CreateObjectResult struct {
-    ID       string `serialize:"true" json:"id"`
-    RegionID string `serialize:"true" json:"region_id"`
-}
-
-func (*CreateObjectResult) GetTypeID() uint8 { 
-    return mconsts.CreateObjectResultID 
-}
-
-type SendEventResult struct {
-    Success   bool   `serialize:"true" json:"success"`
-    IDTo      string `serialize:"true" json:"id_to"`
-    EventID   string `serialize:"true" json:"event_id"`
-    StateHash []byte `serialize:"true" json:"state_hash"`
-    Timestamp string `serialize:"true" json:"timestamp"`
-}
-
-func (*SendEventResult) GetTypeID() uint8 { 
-    return mconsts.SendEventResultID 
-}
-
-type SetInputObjectResult struct {
-    ID      string `serialize:"true" json:"id"`
-    Success bool   `serialize:"true" json:"success"`
-}
-
-func (*SetInputObjectResult) GetTypeID() uint8 { 
-    return mconsts.SetInputObjectResultID 
-}
-
-// Helper functions
+// Code validation helpers
 func validateCode(code []byte) error {
     if len(code) == 0 {
         return fmt.Errorf("empty code")
@@ -419,37 +432,59 @@ func RegisterActions(registry *chain.ActionRegistry) error {
     return nil
 }
 
-// TEE type definitions
-type TEEAttestation struct {
-    EnclaveID   []byte `serialize:"true" json:"enclave_id"`
-    Measurement []byte `serialize:"true" json:"measurement"`
-    Timestamp   string `serialize:"true" json:"timestamp"`
-    Data        []byte `serialize:"true" json:"data"`
-    Signature   []byte `serialize:"true" json:"signature"`
-    RegionProof []byte `serialize:"true" json:"region_proof"`
-}
-
-// Additional helper functions for state management
-func getObjectState(ctx context.Context, mu state.Mutable, id string) (*ObjectState, error) {
-    obj, err := storage.GetObject(ctx, mu, id)
+// State management helpers
+func getObjectState(ctx context.Context, mu state.Mutable, id string) (*types.ObjectState, error) {
+    stateManager := mu.(vm.StateManager)
+    
+    obj, err := stateManager.GetObject(ctx, mu, id)
     if err != nil {
         return nil, err
     }
     if obj == nil {
         return nil, ErrObjectNotFound
     }
-    
-    state := &ObjectState{}
-    if err := codec.Unmarshal(obj, state); err != nil {
-        return nil, fmt.Errorf("failed to unmarshal object state: %w", err)
-    }
-    return state, nil
+    return obj, nil
 }
 
-func setObjectState(ctx context.Context, mu state.Mutable, id string, state *ObjectState) error {
-    data, err := codec.Marshal(state)
-    if err != nil {
-        return fmt.Errorf("failed to marshal object state: %w", err)
+func setObjectState(ctx context.Context, mu state.Mutable, id string, state *types.ObjectState) error {
+    stateManager := mu.(vm.StateManager)
+    return stateManager.SetObject(ctx, mu, id, state)
+}
+
+// Additional helper for region verification
+func verifyRegionTEEs(region map[string]interface{}, attestations [2]types.TEEAttestation) error {
+    tees, ok := region["tees"].([]types.TEEAddress)
+    if !ok {
+        return fmt.Errorf("invalid region TEE format")
     }
-    return storage.SetObject(ctx, mu, id, data)
+
+    for _, att := range attestations {
+        found := false
+        for _, tee := range tees {
+            if bytes.Equal(tee, att.EnclaveID) {
+                found = true
+                break
+            }
+        }
+        if !found {
+            return ErrInvalidAttestation
+        }
+    }
+    return nil
+}
+
+// Timestamp validation helper
+func validateTimestamp(timestamp string) error {
+    ts, err := time.Parse(time.RFC3339, timestamp)
+    if err != nil {
+        return fmt.Errorf("invalid timestamp format: %w", err)
+    }
+    
+    now := time.Now()
+    diff := now.Sub(ts)
+    if diff > 5*time.Minute || diff < -5*time.Minute {
+        return fmt.Errorf("timestamp outside acceptable range")
+    }
+    
+    return nil
 }

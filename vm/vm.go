@@ -12,7 +12,7 @@ import (
    "github.com/ava-labs/hypersdk/genesis"
    "github.com/ava-labs/hypersdk/vm"
    "github.com/ava-labs/hypersdk/vm/defaultvm"
-   "github.com/ava-labs/hypersdk/coordination"
+   "github.com/rhombus-tech/hypersdk/coordination"
 
    "github.com/rhombus-tech/vm/actions"
    "github.com/rhombus-tech/vm/consts"
