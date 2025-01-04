@@ -1,232 +1,284 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
 package actions
 
 import (
-    "bytes"
-    "context"
-    "errors"
-    "fmt"
-    "time"
+	"bytes"
+	"context"
+	"errors"
 
-    "github.com/ava-labs/avalanchego/ids"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/consts"
-    "github.com/cloudflare/roughtime"
+	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/state"
+	
+	"github.com/rhombus-tech/vm/storage"
+	mconsts "github.com/rhombus-tech/vm/consts"
 )
 
 var (
-    ErrRegionExists       = errors.New("region already exists")
-    ErrRegionNotFound     = errors.New("region not found")
-    ErrInvalidTEE        = errors.New("invalid TEE")
-    ErrInvalidRegionID   = errors.New("invalid region ID")
-    ErrInvalidAttestation = errors.New("invalid TEE attestation")
-    ErrAttestationMismatch = errors.New("attestation pair mismatch")
-)
+	ErrRegionExists      = errors.New("region already exists")
+	ErrRegionNotFound    = errors.New("region not found")
+	ErrInvalidTEE       = errors.New("invalid TEE")
+	ErrInvalidRegionID  = errors.New("invalid region ID")
+	ErrTooManyTEEs      = errors.New("too many TEEs")
+	ErrMissingAttestation = errors.New("missing TEE attestation")
+	ErrAttestationMismatch = errors.New("attestation pair mismatch")
+	
+	_ chain.Action = (*CreateRegionAction)(nil)
+	_ chain.Action = (*UpdateRegionAction)(nil)
 
-// Core types
-type TEEAttestation struct {
-    EnclaveID    []byte
-    Measurement  []byte 
-    Timestamp    string
-    Data         []byte
-    Signature    []byte
-}
+	MaxTEEsPerRegion = 32
+)
 
 type TEEAddress []byte
 
-type RegionState struct {
-    Workers     []TEEAddress          `json:"workers"`
-    Objects     map[string]bool       `json:"objects"`    // Track objects in region
-    LastUpdate  time.Time            `json:"last_update"`
-    Status      string               `json:"status"`
+type TEEAttestation struct {
+	EnclaveID   []byte `serialize:"true" json:"enclave_id"`
+	Measurement []byte `serialize:"true" json:"measurement"`
+	Timestamp   string `serialize:"true" json:"timestamp"`
+	Data        []byte `serialize:"true" json:"data"`
+	Signature   []byte `serialize:"true" json:"signature"`
+	RegionProof []byte `serialize:"true" json:"region_proof"`
 }
 
-// Create region action
 type CreateRegionAction struct {
-    RegionID     string
-    Workers      []TEEAddress
-    Attestations [2]TEEAttestation
+	RegionID     string          `serialize:"true" json:"region_id"`
+	TEEs         []TEEAddress    `serialize:"true" json:"tees"`
+	Attestations [2]TEEAttestation `serialize:"true" json:"attestations"`
 }
 
-const (
-    CreateRegion uint8 = iota + 8 // Start at 8 since other actions use 0-7
-    UpdateRegion
-)
-
-func (a *TEEAttestation) Marshal(p *codec.Packer) {
-    p.PackBytes(a.EnclaveID)
-    p.PackBytes(a.Measurement)
-    p.PackString(a.Timestamp)
-    p.PackBytes(a.Data)
-    p.PackBytes(a.Signature)
+func (*CreateRegionAction) GetTypeID() uint8 {
+	return mconsts.CreateRegionID
 }
 
-func (*CreateRegionAction) GetTypeID() uint8 { return CreateRegion }
-
-func (*CreateRegionAction) ComputeUnits(rules chain.Rules) uint64 {
-    return 1
+func (c *CreateRegionAction) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
+	return state.Keys{
+		string(storage.RegionKey(c.RegionID)): state.Write,
+	}
 }
 
-func (a *CreateRegionAction) Marshal(p *codec.Packer) {
-    p.PackString(a.RegionID)
-    p.PackUint32(uint32(len(a.Workers)))
-    for _, worker := range a.Workers {
-        p.PackBytes(worker)
-    }
-    for i := 0; i < 2; i++ {
-        a.Attestations[i].Marshal(p)
-    }
-}
-
-func (a *CreateRegionAction) Verify(ctx context.Context, vm chain.VM) error {
-    if len(a.RegionID) == 0 {
-        return ErrInvalidRegionID
-    }
-    if len(a.Workers) < 2 {
-        return ErrInvalidTEE
-    }
-    for _, worker := range a.Workers {
-        if len(worker) == 0 {
-            return ErrInvalidTEE
-        }
-    }
-    return verifyAttestationPair(a.Attestations)
-}
-
-func (a *CreateRegionAction) Execute(ctx context.Context, vm chain.VM) (*CreateRegionResult, error) {
-    state, err := vm.State()
-    if err != nil {
-        return nil, err
-    }
-    
-    key := []byte("region:" + a.RegionID)
-    
-    exists, err := state.Has(ctx, key)
-    if err != nil {
-        return nil, err
-    }
-    if exists {
-        return nil, ErrRegionExists
-    }
-
-    region := RegionState{
-        Workers:    a.Workers,
-        Objects:    make(map[string]bool),
-        LastUpdate: time.Now().UTC(),
-        Status:     "active",
-    }
-
-    regionBytes, err := codec.MarshalJSON(region) // Use MarshalJSON instead of Marshal
-    if err != nil {
-        return nil, err
-    }
-
-    if err := state.Set(ctx, key, regionBytes); err != nil {
-        return nil, err
-    }
-
-    return &CreateRegionResult{
-        RegionID: a.RegionID,
-        Status:   "active",
-        Workers:  uint64(len(a.Workers)),
-    }, nil
-}
-
-// Helper functions
 func verifyAttestationPair(attestations [2]TEEAttestation) error {
-    if len(attestations[0].EnclaveID) == 0 || len(attestations[1].EnclaveID) == 0 {
-        return ErrInvalidAttestation
-    }
+	// Verify both attestations exist and have valid enclave IDs
+	if len(attestations[0].EnclaveID) == 0 || len(attestations[1].EnclaveID) == 0 {
+		return ErrMissingAttestation
+	}
 
-    if attestations[0].Timestamp != attestations[1].Timestamp {
-        return ErrAttestationMismatch
-    }
+	// Verify timestamps match
+	if attestations[0].Timestamp != attestations[1].Timestamp {
+		return ErrAttestationMismatch
+	}
 
-    if !bytes.Equal(attestations[0].Data, attestations[1].Data) {
-        return ErrAttestationMismatch
-    }
+	// Verify results match
+	if !bytes.Equal(attestations[0].Data, attestations[1].Data) {
+		return ErrAttestationMismatch
+	}
 
-    return verifyTimestamp(attestations[0].Timestamp)
+	// Verify measurements are present
+	if len(attestations[0].Measurement) == 0 || len(attestations[1].Measurement) == 0 {
+		return ErrMissingAttestation
+	}
+
+	// Verify signatures are present
+	if len(attestations[0].Signature) == 0 || len(attestations[1].Signature) == 0 {
+		return ErrMissingAttestation
+	}
+
+	return nil
 }
 
-func verifyTimestamp(timestamp string) error {
-    ts, err := time.Parse(time.RFC3339, timestamp)
-    if err != nil {
-        return fmt.Errorf("invalid timestamp format: %w", err)
-    }
+func (c *CreateRegionAction) Execute(
+	ctx context.Context,
+	_ chain.Rules,
+	mu state.Mutable,
+	_ int64,
+	actor codec.Address,
+	_ ids.ID,
+) (codec.Typed, error) {
+	// Validate region ID
+	if len(c.RegionID) == 0 || len(c.RegionID) > 256 {
+		return nil, ErrInvalidRegionID
+	}
 
-    now := roughtime.Now()
-    diff := now.Sub(ts)
-    if diff > 5*time.Minute || diff < -5*time.Minute {
-        return fmt.Errorf("timestamp outside valid range")
-    }
+	// Validate TEE list
+	if len(c.TEEs) == 0 || len(c.TEEs) > MaxTEEsPerRegion {
+		return nil, ErrTooManyTEEs
+	}
 
-    return nil
+	// Validate individual TEEs
+	for _, tee := range c.TEEs {
+		if len(tee) == 0 || len(tee) > 64 { // Assuming reasonable TEE ID size
+			return nil, ErrInvalidTEE
+		}
+	}
+
+	// Validate attestations
+	if err := verifyAttestationPair(c.Attestations); err != nil {
+		return nil, err
+	}
+
+	// Check if region already exists
+	exists, err := storage.RegionExists(ctx, mu, c.RegionID)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, ErrRegionExists
+	}
+
+	// Create region state
+	region := map[string]interface{}{
+		"tees": c.TEEs,
+		"attestations": c.Attestations,
+		"created_at": c.Attestations[0].Timestamp,
+		"last_updated": c.Attestations[0].Timestamp,
+	}
+
+	if err := storage.SetRegion(ctx, mu, c.RegionID, region); err != nil {
+		return nil, err
+	}
+
+	return &CreateRegionResult{
+		RegionID:  c.RegionID,
+		Success:   true,
+		StateHash: c.Attestations[0].Data,
+		Timestamp: c.Attestations[0].Timestamp,
+	}, nil
 }
 
-// Result types
+func (*CreateRegionAction) ComputeUnits(chain.Rules) uint64 {
+	return 1
+}
+
+func (*CreateRegionAction) ValidRange(chain.Rules) (int64, int64) {
+	return -1, -1
+}
+
+type UpdateRegionAction struct {
+	RegionID     string          `serialize:"true" json:"region_id"`
+	AddTEEs      []TEEAddress    `serialize:"true" json:"add_tees"`
+	RemTEEs      []TEEAddress    `serialize:"true" json:"rem_tees"`
+	Attestations [2]TEEAttestation `serialize:"true" json:"attestations"`
+}
+
+func (*UpdateRegionAction) GetTypeID() uint8 {
+	return mconsts.UpdateRegionID
+}
+
+func (u *UpdateRegionAction) StateKeys(actor codec.Address, _ ids.ID) state.Keys {
+	return state.Keys{
+		string(storage.RegionKey(u.RegionID)): state.Read | state.Write,
+	}
+}
+
+func (u *UpdateRegionAction) Execute(
+	ctx context.Context,
+	_ chain.Rules,
+	mu state.Mutable,
+	_ int64,
+	actor codec.Address,
+	_ ids.ID,
+) (codec.Typed, error) {
+	// Validate region ID
+	if len(u.RegionID) == 0 || len(u.RegionID) > 256 {
+		return nil, ErrInvalidRegionID
+	}
+
+	// Validate TEE lists
+	if len(u.AddTEEs) > MaxTEEsPerRegion || len(u.RemTEEs) > MaxTEEsPerRegion {
+		return nil, ErrTooManyTEEs
+	}
+
+	// Validate individual TEEs
+	for _, tee := range u.AddTEEs {
+		if len(tee) == 0 || len(tee) > 64 {
+			return nil, ErrInvalidTEE
+		}
+	}
+	for _, tee := range u.RemTEEs {
+		if len(tee) == 0 || len(tee) > 64 {
+			return nil, ErrInvalidTEE
+		}
+	}
+
+	// Validate attestations
+	if err := verifyAttestationPair(u.Attestations); err != nil {
+		return nil, err
+	}
+
+	// Get existing region
+	region, err := storage.GetRegion(ctx, mu, u.RegionID)
+	if err != nil {
+		return nil, err
+	}
+	if region == nil {
+		return nil, ErrRegionNotFound
+	}
+
+	currentTEEs, ok := region["tees"].([]TEEAddress)
+	if !ok {
+		return nil, errors.New("invalid region state format")
+	}
+
+	// Remove TEEs
+	for _, remTEE := range u.RemTEEs {
+		for i, tee := range currentTEEs {
+			if bytes.Equal(tee, remTEE) {
+				currentTEEs = append(currentTEEs[:i], currentTEEs[i+1:]...)
+				break
+			}
+		}
+	}
+
+	// Add new TEEs
+	currentTEEs = append(currentTEEs, u.AddTEEs...)
+
+	// Validate final TEE count
+	if len(currentTEEs) > MaxTEEsPerRegion {
+		return nil, ErrTooManyTEEs
+	}
+
+	// Update region state
+	region["tees"] = currentTEEs
+	region["attestations"] = u.Attestations
+	region["last_updated"] = u.Attestations[0].Timestamp
+
+	if err := storage.SetRegion(ctx, mu, u.RegionID, region); err != nil {
+		return nil, err
+	}
+
+	return &UpdateRegionResult{
+		RegionID:  u.RegionID,
+		Success:   true,
+		StateHash: u.Attestations[0].Data,
+		Timestamp: u.Attestations[0].Timestamp,
+	}, nil
+}
+
+func (*UpdateRegionAction) ComputeUnits(chain.Rules) uint64 {
+	return 1
+}
+
+func (*UpdateRegionAction) ValidRange(chain.Rules) (int64, int64) {
+	return -1, -1
+}
+
 type CreateRegionResult struct {
-    RegionID string `json:"region_id"`
-    Status   string `json:"status"`
-    Workers  uint64 `json:"worker_count"`
+	RegionID  string `serialize:"true" json:"region_id"`
+	Success   bool   `serialize:"true" json:"success"`
+	StateHash []byte `serialize:"true" json:"state_hash"`
+	Timestamp string `serialize:"true" json:"timestamp"`
 }
 
-func (*CreateRegionResult) GetTypeID() uint8 { return CreateRegion }
-
-func GetRegion(ctx context.Context, vm chain.VM) (*RegionState, error) {
-    state, err := vm.State()
-    if err != nil {
-        return nil, err
-    }
-    
-    key := []byte("region:" + regionID)
-    
-    regionBytes, err := state.Get(ctx, key)
-    if err != nil {
-        return nil, err
-    }
-    if regionBytes == nil {
-        return nil, ErrRegionNotFound
-    }
-
-    var region RegionState
-    if err := codec.UnmarshalJSON(regionBytes, &region); err != nil {
-        return nil, err
-    }
-
-    return &region, nil
+func (*CreateRegionResult) GetTypeID() uint8 {
+	return mconsts.CreateRegionResultID
 }
 
-func VerifyWorkerInRegion(ctx context.Context, vm chain.VM, worker TEEAddress, regionID string) error {
-    region, err := GetRegion(ctx, vm, regionID)
-    if err != nil {
-        return err
-    }
-
-    for _, w := range region.Workers {
-        if bytes.Equal(w, worker) {
-            return nil
-        }
-    }
-
-    return ErrInvalidTEE
+type UpdateRegionResult struct {
+	RegionID  string `serialize:"true" json:"region_id"`
+	Success   bool   `serialize:"true" json:"success"`
+	StateHash []byte `serialize:"true" json:"state_hash"`
+	Timestamp string `serialize:"true" json:"timestamp"`
 }
 
-func RegisterRegionObject(ctx context.Context, vm chain.VM, regionID string, objectID string) error {
-    region, err := GetRegion(ctx, vm, regionID)
-    if err != nil {
-        return err
-    }
-
-    region.Objects[objectID] = true
-    region.LastUpdate = time.Now().UTC()
-
-    regionBytes, err := codec.Marshal(region)
-    if err != nil {
-        return err
-    }
-
-    return vm.State().Set(ctx, []byte("region:"+regionID), regionBytes)
+func (*UpdateRegionResult) GetTypeID() uint8 {
+	return mconsts.UpdateRegionResultID
 }
