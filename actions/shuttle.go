@@ -17,7 +17,7 @@ import (
     "github.com/rhombus-tech/vm"         
     "github.com/rhombus-tech/vm/types"
     "github.com/rhombus-tech/vm/consts"
-    "github.com/rhombus-tech/hypersdk/coordination"
+    "github.com/rhombus-tech/vm/coordination"
 )
 
 var (

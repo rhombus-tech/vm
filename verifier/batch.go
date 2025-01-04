@@ -10,7 +10,7 @@ import (
 
    "github.com/ava-labs/hypersdk/chain"
    "github.com/ava-labs/hypersdk/state"
-   "github.com/rhombus-tech/hypersdk/coordination"
+   "github.com/rhombus-tech/vm/coordination"
 
    "github.com/rhombus-tech/vm/actions"
 )

@@ -14,7 +14,7 @@ import (
    "github.com/rhombus-tech/vm/actions"
    "github.com/rhombus-tech/vm/consts"
    "github.com/rhombus-tech/vm/storage"
-   "github.com/rhombus-tech/hypersdk/coordination"
+   "github.com/rhombus-tech/vm/coordination"
 )
 
 var (

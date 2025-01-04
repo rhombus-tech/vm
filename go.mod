@@ -16,8 +16,8 @@ require (
 )
 
 replace (
-	github.com/rhombus-tech/hypersdk => github.com/rhombus-tech/hypersdk v0.0.0-20240311-1b0cf670fb4b
-	github.com/rhombus-tech/vm => github.com/rhombus-tech/vm v0.0.0-20240311-4a8c0ae507a3
+    github.com/rhombus-tech/hypersdk => github.com/rhombus-tech/hypersdk v0.1.0
+    github.com/rhombus-tech/vm => github.com/rhombus-tech/vm v0.0.0-20240311-4a8c0ae507a3
 )
 
 require (
