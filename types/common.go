@@ -25,10 +25,13 @@ type Event struct {
 }
 
 type TEEAttestation struct {
-    EnclaveID   []byte
-    Measurement []byte
-    Timestamp   string
-    Data        []byte
-    Signature   []byte
-    RegionProof []byte
+    EnclaveID   []byte    `serialize:"true" json:"enclave_id"`
+    Measurement []byte    `serialize:"true" json:"measurement"`
+    Timestamp   time.Time `serialize:"true" json:"timestamp"`
+    Data        []byte    `serialize:"true" json:"data"`
+    Signature   []byte    `serialize:"true" json:"signature"`
+    RegionProof []byte    `serialize:"true" json:"region_proof"`
 }
+
+// When using timestamps in the event creation:
+eventID := fmt.Sprintf("%s:%s", s.IDTo, s.Attestations[0].Timestamp.UTC().Format(time.RFC3339))

@@ -1,79 +1,92 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
 package storage
 
 import (
     "context"
+    "errors"
     "fmt"
     "time"
 
+    "github.com/ava-labs/avalanchego/database"
+    "github.com/ava-labs/avalanchego/ids"
     "github.com/ava-labs/hypersdk/chain"
     "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/state"
+    "github.com/ava-labs/hypersdk/consts"
+    "github.com/ava-labs/hypersdk/fees"
+
+    "github.com/rhombus-tech/vm/actions"
+    "github.com/rhombus-tech/vm/tee"
     "github.com/rhombus-tech/vm/coordination"
-    
-    "github.com/rhombus-tech/vm"      // For interfaces
-    "github.com/rhombus-tech/vm/types"
-    "github.com/rhombus-tech/vm/tee"  
 )
 
-// Constants for state key prefixes
-const (
-    ObjectPrefix = "object:"
-    EventPrefix  = "event:"
-    InputObject  = "input_object"
-    RegionPrefix = "region:"
-)
-
-// Interface verification
-var _ chain.StateManager = (*StateManager)(nil)
-var _ vm.StateManager = (*StateManager)(nil)
-
-// StateManager structure
 type StateManager struct {
-    coordinator *coordination.Coordinator
+    state       state.KeyValueReader
     teeClient   *tee.Client
+    coordinator *coordination.Coordinator
 }
 
-// Constructor
-func NewStateManager(coord *coordination.Coordinator, teeEndpoint string) (*StateManager, error) {
+func NewStateManager(db state.KeyValueReader, teeEndpoint string) (*StateManager, error) {
     teeClient, err := tee.NewClient(teeEndpoint)
     if err != nil {
         return nil, fmt.Errorf("failed to create TEE client: %w", err)
     }
 
+    // Initialize coordinator
+    coord := coordination.NewCoordinator(&coordination.Config{
+        MinWorkers: 2,
+        MaxWorkers: 10,
+        WorkerTimeout: 30 * time.Second,
+        ChannelTimeout: 10 * time.Second,
+    })
+    if err := coord.Start(); err != nil {
+        return nil, fmt.Errorf("failed to start coordinator: %w", err)
+    }
+
     return &StateManager{
+        state: db,
+        teeClient: teeClient,
         coordinator: coord,
-        teeClient:   teeClient,
     }, nil
 }
 
 // Base chain.StateManager implementations
-func (*StateManager) HeightKey() []byte {
+func (sm *StateManager) HeightKey() []byte {
     return HeightKey()
 }
 
-func (*StateManager) TimestampKey() []byte {
+func (sm *StateManager) TimestampKey() []byte {
     return TimestampKey()
 }
 
-func (*StateManager) FeeKey() []byte {
+func (sm *StateManager) FeeKey() []byte {
     return FeeKey()
 }
 
-func (*StateManager) SponsorStateKeys(addr codec.Address) state.Keys {
+func (sm *StateManager) GetValue(ctx context.Context, key []byte) ([]byte, error) {
+    return sm.state.GetValue(ctx, key)
+}
+
+func (sm *StateManager) Insert(ctx context.Context, key []byte, value []byte) error {
+    return sm.state.Insert(ctx, key, value)
+}
+
+func (sm *StateManager) Remove(ctx context.Context, key []byte) error {
+    return sm.state.Remove(ctx, key)
+}
+
+// Balance and state key management
+func (sm *StateManager) SponsorStateKeys(addr codec.Address) state.Keys {
     return state.Keys{
         string(BalanceKey(addr)): state.Read | state.Write,
     }
 }
 
-func (*StateManager) CanDeduct(
+func (sm *StateManager) CanDeduct(
     ctx context.Context,
     addr codec.Address,
-    im state.Immutable,
     amount uint64,
 ) error {
-    bal, err := GetBalance(ctx, im, addr)
+    bal, err := GetBalance(ctx, sm.state, addr)
     if err != nil {
         return err
     }
@@ -83,259 +96,173 @@ func (*StateManager) CanDeduct(
     return nil
 }
 
-func (*StateManager) Deduct(
+func (sm *StateManager) Deduct(
     ctx context.Context,
     addr codec.Address,
-    mu state.Mutable,
     amount uint64,
 ) error {
-    _, err := SubBalance(ctx, mu, addr, amount)
+    _, err := SubBalance(ctx, sm.state, addr, amount)
     return err
 }
 
-func (*StateManager) AddBalance(
-    ctx context.Context,
+func (sm *StateManager) AddBalance(
+    ctx context.Context, 
     addr codec.Address,
-    mu state.Mutable,
     amount uint64,
     createAccount bool,
 ) error {
-    _, err := AddBalance(ctx, mu, addr, amount, createAccount)
+    _, err := AddBalance(ctx, sm.state, addr, amount, createAccount)
     return err
 }
 
-// Object management implementations
-func (*StateManager) GetObject(ctx context.Context, mu state.Immutable, id string) (*types.ObjectState, error) {
-    key := []byte(ObjectPrefix + id)
-    objBytes, err := mu.GetValue(ctx, key)
+// Object management with state keys
+func (sm *StateManager) GetObject(ctx context.Context, id string) (map[string][]byte, error) {
+    key := []byte(fmt.Sprintf("object:%s", id))
+    value, err := sm.GetValue(ctx, key)
     if err != nil {
-        return nil, err
-    }
-    if objBytes == nil {
-        return nil, nil
-    }
-
-    var obj types.ObjectState
-    if err := codec.Unmarshal(objBytes, &obj); err != nil {
+        if errors.Is(err, database.ErrNotFound) {
+            return nil, nil
+        }
         return nil, err
     }
 
-    return &obj, nil
+    var obj map[string][]byte
+    if err := codec.Unmarshal(value, &obj); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal object: %w", err)
+    }
+    return obj, nil
 }
 
-func (*StateManager) SetObject(ctx context.Context, mu state.Mutable, id string, obj *types.ObjectState) error {
-    key := []byte(ObjectPrefix + id)
-    objBytes, err := codec.Marshal(obj)
+func (sm *StateManager) SetObject(ctx context.Context, id string, obj map[string][]byte) error {
+    key := []byte(fmt.Sprintf("object:%s", id))
+    value, err := codec.Marshal(obj)
     if err != nil {
-        return err
+        return fmt.Errorf("failed to marshal object: %w", err)
+    }
+    return sm.Insert(ctx, key, value)
+}
+
+func (sm *StateManager) ObjectExists(ctx context.Context, id string) (bool, error) {
+    key := []byte(fmt.Sprintf("object:%s", id))
+    return sm.state.Has(ctx, key)
+}
+
+// Event management with coordination
+func (sm *StateManager) SetEvent(ctx context.Context, id string, event *actions.Event) error {
+    key := []byte(fmt.Sprintf("event:%s:%s", event.Timestamp, id))
+    value, err := codec.Marshal(event)
+    if err != nil {
+        return fmt.Errorf("failed to marshal event: %w", err)
     }
 
-    return mu.SetValue(ctx, key, objBytes)
-}
-
-func (*StateManager) ObjectExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
-    key := []byte(ObjectPrefix + id)
-    return im.HasValue(ctx, key)
-}
-
-// Event management implementations
-func (*StateManager) SetEvent(ctx context.Context, mu state.Mutable, id string, event *types.Event) error {
-    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, event.Timestamp, id))
-    eventBytes, err := codec.Marshal(event)
-    if err != nil {
-        return err
+    // Update coordination state
+    task := &coordination.Task{
+        ID:       id,
+        WorkerIDs: sm.getRegionWorkers(event.RegionID),
+        Data:     event.Parameters,
+        Timeout:  5 * time.Second,
+    }
+    if err := sm.coordinator.SubmitTask(ctx, task); err != nil {
+        return fmt.Errorf("coordination failed: %w", err)
     }
 
-    return mu.SetValue(ctx, key, eventBytes)
+    return sm.Insert(ctx, key, value)
 }
 
-func (*StateManager) GetEvent(ctx context.Context, im state.Immutable, timestamp string, id string) (*types.Event, error) {
-    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, timestamp, id))
-    eventBytes, err := im.GetValue(ctx, key)
+func (sm *StateManager) GetEvent(ctx context.Context, timestamp string, id string) (*actions.Event, error) {
+    key := []byte(fmt.Sprintf("event:%s:%s", timestamp, id))
+    value, err := sm.GetValue(ctx, key)
     if err != nil {
+        if errors.Is(err, database.ErrNotFound) {
+            return nil, nil
+        }
         return nil, err
     }
-    if eventBytes == nil {
-        return nil, nil
-    }
 
-    var event types.Event
-    if err := codec.Unmarshal(eventBytes, &event); err != nil {
-        return nil, err
+    var event actions.Event
+    if err := codec.Unmarshal(value, &event); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal event: %w", err)
     }
     return &event, nil
 }
 
 // Input object management
-func (*StateManager) GetInputObject(ctx context.Context, im state.Immutable) (string, error) {
-    inputBytes, err := im.GetValue(ctx, []byte(InputObject))
+func (sm *StateManager) SetInputObject(ctx context.Context, id string) error {
+    return sm.Insert(ctx, []byte("input_object"), []byte(id))
+}
+
+func (sm *StateManager) GetInputObject(ctx context.Context) (string, error) {
+    value, err := sm.GetValue(ctx, []byte("input_object"))
     if err != nil {
+        if errors.Is(err, database.ErrNotFound) {
+            return "", nil
+        }
         return "", err
     }
-    if inputBytes == nil {
-        return "", nil
-    }
-    return string(inputBytes), nil
+    return string(value), nil
 }
 
-func (*StateManager) SetInputObject(ctx context.Context, mu state.Mutable, id string) error {
-    return mu.SetValue(ctx, []byte(InputObject), []byte(id))
-}
-
-// Region management implementations
-func (*StateManager) GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]interface{}, error) {
-    key := []byte(RegionPrefix + id)
-    regionBytes, err := im.GetValue(ctx, key)
+// Region management with worker filtering
+func (sm *StateManager) GetRegion(ctx context.Context, id string) (map[string]interface{}, error) {
+    key := []byte(fmt.Sprintf("region:%s", id))
+    value, err := sm.GetValue(ctx, key)
     if err != nil {
+        if errors.Is(err, database.ErrNotFound) {
+            return nil, nil
+        }
         return nil, err
-    }
-    if regionBytes == nil {
-        return nil, nil
     }
 
     var region map[string]interface{}
-    if err := codec.Unmarshal(regionBytes, &region); err != nil {
-        return nil, err
+    if err := codec.Unmarshal(value, &region); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal region: %w", err)
     }
     return region, nil
 }
 
-func (*StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error {
-    key := []byte(RegionPrefix + id)
-    regionBytes, err := codec.Marshal(region)
+func (sm *StateManager) SetRegion(ctx context.Context, id string, region map[string]interface{}) error {
+    key := []byte(fmt.Sprintf("region:%s", id))
+    value, err := codec.Marshal(region)
     if err != nil {
-        return err
+        return fmt.Errorf("failed to marshal region: %w", err)
     }
-    return mu.SetValue(ctx, key, regionBytes)
+    return sm.Insert(ctx, key, value)
 }
 
-func (*StateManager) RegionExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
-    key := []byte(RegionPrefix + id)
-    return im.HasValue(ctx, key)
+func (sm *StateManager) RegionExists(ctx context.Context, id string) (bool, error) {
+    key := []byte(fmt.Sprintf("region:%s", id))
+    return sm.state.Has(ctx, key)
 }
 
-// State keys helper
-func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
-    keys := state.Keys{
-        string([]byte(ObjectPrefix + id)): state.Read | state.Write,
-        string([]byte(EventPrefix + id)): state.Read | state.Write,
-        string([]byte(InputObject)): state.Read | state.Write,
-        string([]byte(RegionPrefix + id)): state.Read | state.Write,
+// State key helpers
+func (sm *StateManager) GetShuttleStateKeys(id string) state.Keys {
+    return state.Keys{
+        fmt.Sprintf("object:%s", id): state.Read | state.Write,
+        fmt.Sprintf("event:%s", id):  state.Read | state.Write,
+        "input_object":               state.Read | state.Write,
     }
-    return keys
-}// Event management implementations
-func (*StateManager) SetEvent(ctx context.Context, mu state.Mutable, id string, event *types.Event) error {
-    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, event.Timestamp, id))
-    eventBytes, err := codec.Marshal(event)
-    if err != nil {
-        return err
-    }
-
-    return mu.SetValue(ctx, key, eventBytes)
 }
 
-func (*StateManager) GetEvent(ctx context.Context, im state.Immutable, timestamp string, id string) (*types.Event, error) {
-    key := []byte(fmt.Sprintf("%s%s:%s", EventPrefix, timestamp, id))
-    eventBytes, err := im.GetValue(ctx, key)
-    if err != nil {
-        return nil, err
-    }
-    if eventBytes == nil {
-        return nil, nil
-    }
-
-    var event types.Event
-    if err := codec.Unmarshal(eventBytes, &event); err != nil {
-        return nil, err
-    }
-    return &event, nil
+// TEE and coordination
+func (sm *StateManager) GetCoordinator() *coordination.Coordinator {
+    return sm.coordinator
 }
 
-// Input object management
-func (*StateManager) GetInputObject(ctx context.Context, im state.Immutable) (string, error) {
-    inputBytes, err := im.GetValue(ctx, []byte(InputObject))
-    if err != nil {
-        return "", err
-    }
-    if inputBytes == nil {
-        return "", nil
-    }
-    return string(inputBytes), nil
-}
-
-func (*StateManager) SetInputObject(ctx context.Context, mu state.Mutable, id string) error {
-    return mu.SetValue(ctx, []byte(InputObject), []byte(id))
-}
-
-// Region management implementations
-func (*StateManager) GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]interface{}, error) {
-    key := []byte(RegionPrefix + id)
-    regionBytes, err := im.GetValue(ctx, key)
-    if err != nil {
-        return nil, err
-    }
-    if regionBytes == nil {
-        return nil, nil
-    }
-
-    var region map[string]interface{}
-    if err := codec.Unmarshal(regionBytes, &region); err != nil {
-        return nil, err
-    }
-    return region, nil
-}
-
-func (*StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error {
-    key := []byte(RegionPrefix + id)
-    regionBytes, err := codec.Marshal(region)
-    if err != nil {
-        return err
-    }
-    return mu.SetValue(ctx, key, regionBytes)
-}
-
-func (*StateManager) RegionExists(ctx context.Context, im state.Immutable, id string) (bool, error) {
-    key := []byte(RegionPrefix + id)
-    return im.HasValue(ctx, key)
-}
-
-// State keys helper
-func (*StateManager) GetShuttleStateKeys(id string) state.Keys {
-    keys := state.Keys{
-        string([]byte(ObjectPrefix + id)): state.Read | state.Write,
-        string([]byte(EventPrefix + id)): state.Read | state.Write,
-        string([]byte(InputObject)): state.Read | state.Write,
-        string([]byte(RegionPrefix + id)): state.Read | state.Write,
-    }
-    return keys
-}
-
-// State transition verification
-func (sm *StateManager) VerifyStateTransition(ctx context.Context, action chain.Action) error {
-    switch a := action.(type) {
-    case *types.SendEventAction:  // Updated to use types package
-        // Verify region coordination
-        return sm.verifyRegionalEvent(ctx, a)
-    }
-    return nil
-}
-
-// TEE and coordination logic
-func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *types.SendEventAction) error {
-    // First execute in TEEs
-    if err := sm.teeClient.ExecuteAction(ctx, event); err != nil {
+func (sm *StateManager) ExecuteAction(ctx context.Context, action *actions.SendEventAction) error {
+    // Execute in TEE
+    if err := sm.teeClient.ExecuteAction(ctx, action); err != nil {
         return fmt.Errorf("TEE execution failed: %w", err)
     }
-    
-    // Then do coordination
+
+    // Coordinate between workers
     workers := sm.coordinator.GetWorkerIDs()
-    regWorkers := filterWorkersForRegion(workers, event.RegionID)
-    
+    regWorkers := sm.filterWorkersForRegion(workers, action.RegionID)
+
     task := &coordination.Task{
-        ID:           event.IDTo,
+        ID:           action.IDTo,
         WorkerIDs:    regWorkers,
-        Data:         event.Parameters,
-        Attestations: event.Attestations[:],
+        Data:         action.Parameters,
+        Attestations: action.Attestations[:],
         Timeout:      5 * time.Second,
     }
 
@@ -346,38 +273,43 @@ func (sm *StateManager) verifyRegionalEvent(ctx context.Context, event *types.Se
     return nil
 }
 
-// Helper function to filter workers for a specific region
-func filterWorkersForRegion(workers []coordination.WorkerID, regionID string) []coordination.WorkerID {
+// Helper functions
+func (sm *StateManager) getRegionWorkers(regionID string) []coordination.WorkerID {
+    var workers []coordination.WorkerID
+    allWorkers := sm.coordinator.GetWorkerIDs()
+    return sm.filterWorkersForRegion(allWorkers, regionID)
+}
+
+func (sm *StateManager) filterWorkersForRegion(workers []coordination.WorkerID, regionID string) []coordination.WorkerID {
     var regWorkers []coordination.WorkerID
     for _, worker := range workers {
-        // Add your region filtering logic here
-        // For example, check if worker belongs to the region
-        if isWorkerInRegion(worker, regionID) {
+        if sm.isWorkerInRegion(worker, regionID) {
             regWorkers = append(regWorkers, worker)
         }
     }
     return regWorkers
 }
 
-// Helper function to check if a worker belongs to a region
-func isWorkerInRegion(workerID coordination.WorkerID, regionID string) bool {
-    // Implement your worker-region mapping logic here
-    // This could involve checking a mapping stored in state
-    // or using a naming convention for worker IDs
-    return true // Placeholder implementation
+func (sm *StateManager) isWorkerInRegion(workerID coordination.WorkerID, regionID string) bool {
+    // Implementation would check worker's region assignment
+    // This is a placeholder
+    return true
 }
 
-// Coordinator access
-func (sm *StateManager) GetCoordinator() *coordination.Coordinator {
-    return sm.coordinator
-}
-
-// Cleanup
 func (sm *StateManager) Close() error {
+    var errs []error
     if sm.teeClient != nil {
         if err := sm.teeClient.Close(); err != nil {
-            return fmt.Errorf("failed to close TEE client: %w", err)
+            errs = append(errs, fmt.Errorf("failed to close TEE client: %w", err))
         }
+    }
+    if sm.coordinator != nil {
+        if err := sm.coordinator.Stop(); err != nil {
+            errs = append(errs, fmt.Errorf("failed to stop coordinator: %w", err))
+        }
+    }
+    if len(errs) > 0 {
+        return fmt.Errorf("multiple errors during shutdown: %v", errs)
     }
     return nil
 }

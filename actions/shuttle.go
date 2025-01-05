@@ -27,6 +27,7 @@ var (
     ErrInvalidFunction = errors.New("invalid function call")
     ErrCodeTooLarge    = errors.New("code size exceeds maximum")  
     ErrStorageTooLarge = errors.New("storage size exceeds maximum")
+    ErrInvalidAttestation = errors.New("invalid attestation")
 )
 
 const (
@@ -167,7 +168,7 @@ func (c *CreateObjectAction) Execute(
         Storage:     c.Storage,
         RegionID:    c.RegionID,
         Events:      make([]string, 0),
-        LastUpdated: time.Unix(timestamp, 0).UTC().Format(time.RFC3339),
+        LastUpdated: time.Unix(timestamp, 0).UTC(),
         Status:      "active",
     }
 
@@ -194,7 +195,7 @@ func (c *CreateObjectAction) ValidRange(chain.Rules) (int64, int64) {
 func (s *SendEventAction) StateKeys(actor codec.Address) state.Keys {
     return state.Keys{
         string([]byte("object:" + s.IDTo)): state.Read | state.Write,
-        string([]byte(fmt.Sprintf("event:%s:%s", s.Attestations[0].Timestamp, s.IDTo))): state.Write,
+        string([]byte(fmt.Sprintf("event:%s:%s", s.Attestations[0].Timestamp.Format(time.RFC3339), s.IDTo))): state.Write,
     }
 }
 
@@ -255,12 +256,12 @@ func (s *SendEventAction) Execute(
     }
 
     // Create event record
-    eventID := fmt.Sprintf("%s:%s", s.IDTo, s.Attestations[0].Timestamp)
+    eventID := fmt.Sprintf("%s:%s", s.IDTo, s.Attestations[0].Timestamp.Format(time.RFC3339))
     event := &types.Event{
         FunctionCall: s.FunctionCall,
         Parameters:   s.Parameters,
         Attestations: s.Attestations,
-        Timestamp:    s.Attestations[0].Timestamp,
+        Timestamp:    s.Attestations[0].Timestamp.Format(time.RFC3339),
         Status:      "pending",
     }
 
@@ -274,7 +275,7 @@ func (s *SendEventAction) Execute(
         obj.Events = make([]string, 0)
     }
     obj.Events = append(obj.Events, eventID)
-    obj.LastUpdated = time.Unix(timestamp, 0).UTC().Format(time.RFC3339)
+    obj.LastUpdated = time.Unix(timestamp, 0).UTC()
 
     if err := stateManager.SetObject(ctx, mu, s.IDTo, obj); err != nil {
         return nil, err
@@ -285,7 +286,7 @@ func (s *SendEventAction) Execute(
         IDTo:      s.IDTo,
         EventID:   eventID,
         StateHash: s.Attestations[0].Data,
-        Timestamp: s.Attestations[0].Timestamp,
+        Timestamp: s.Attestations[0].Timestamp.UTC().Format(time.RFC3339),
     }, nil
 }
 
@@ -414,22 +415,6 @@ func submitTask(
         return nil
     }
     return fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
-}
-
-// Register actions with the registry
-func RegisterActions(registry *chain.ActionRegistry) error {
-    errs := []error{
-        registry.Register(&CreateObjectAction{}),
-        registry.Register(&SendEventAction{}),
-        registry.Register(&SetInputObjectAction{}),
-    }
-
-    for _, err := range errs {
-        if err != nil {
-            return err
-        }
-    }
-    return nil
 }
 
 // State management helpers

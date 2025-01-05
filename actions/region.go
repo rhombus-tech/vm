@@ -4,6 +4,7 @@ import (
     "bytes"
     "context"
     "errors"
+    "time"
 
     "github.com/ava-labs/avalanchego/ids"
     "github.com/ava-labs/hypersdk/chain"
@@ -110,8 +111,8 @@ func (c *CreateRegionAction) Execute(
     region := map[string]interface{}{
         "tees": c.TEEs,
         "attestations": c.Attestations,
-        "created_at": c.Attestations[0].Timestamp,
-        "last_updated": c.Attestations[0].Timestamp,
+        "created_at": c.Attestations[0].Timestamp.Format(time.RFC3339),
+        "last_updated": c.Attestations[0].Timestamp.Format(time.RFC3339),
     }
 
     if err := stateManager.SetRegion(ctx, mu, c.RegionID, region); err != nil {
@@ -122,7 +123,7 @@ func (c *CreateRegionAction) Execute(
         RegionID:  c.RegionID,
         Success:   true,
         StateHash: c.Attestations[0].Data,
-        Timestamp: c.Attestations[0].Timestamp,
+        Timestamp: c.Attestations[0].Timestamp.Format(time.RFC3339),
     }, nil
 }
 
@@ -207,7 +208,7 @@ func (u *UpdateRegionAction) Execute(
 
     region["tees"] = currentTEEs
     region["attestations"] = u.Attestations
-    region["last_updated"] = u.Attestations[0].Timestamp
+    region["last_updated"] = u.Attestations[0].Timestamp.Format(time.RFC3339)
 
     if err := stateManager.SetRegion(ctx, mu, u.RegionID, region); err != nil {
         return nil, err
@@ -217,7 +218,7 @@ func (u *UpdateRegionAction) Execute(
         RegionID:  u.RegionID,
         Success:   true,
         StateHash: u.Attestations[0].Data,
-        Timestamp: u.Attestations[0].Timestamp,
+        Timestamp: u.Attestations[0].Timestamp.Format(time.RFC3339),
     }, nil
 }
 
