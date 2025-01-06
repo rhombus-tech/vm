@@ -3,40 +3,40 @@
 package storage
 
 import (
-	"context"
-	"encoding/binary"
-	"errors"
-	"fmt"
-	"time"
+    "context"
+    "encoding/binary"
+    "errors"
+    "fmt"
+    "time"
 
-	"github.com/ava-labs/avalanchego/database"
-	smath "github.com/ava-labs/avalanchego/utils/math"
-	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/consts"
-	"github.com/ava-labs/hypersdk/state"
-	"github.com/rhombus-tech/vm/coordination"
+    "github.com/ava-labs/avalanchego/database"
+    smath "github.com/ava-labs/avalanchego/utils/math"
+    "github.com/ava-labs/hypersdk/codec"
+    "github.com/ava-labs/hypersdk/consts"
+    "github.com/ava-labs/hypersdk/state"
+    "github.com/rhombus-tech/vm/coordination"
+    "github.com/rhombus-tech/vm/actions"
+    "github.com/rhombus-tech/vm/core"
 )
 
-type ReadState func(context.Context, [][]byte) ([][]byte, []error)
+// Marshal/Unmarshal helpers
+func marshalState(v interface{}) ([]byte, error) {
+    p := codec.NewWriter(0, consts.MaxInt)
+    if err := p.PackObject(v); err != nil {
+        return nil, err
+    }
+    return p.Bytes(), p.Err()
+}
 
-// State
-// / (height) => store in root
-//   -> [heightPrefix] => height
-// 0x0/ (balance)
-//   -> [owner] => balance
-// 0x1/ (hypersdk-height)
-// 0x2/ (hypersdk-timestamp)
-// 0x3/ (hypersdk-fee)
-// 0x4/ (object)
-//   -> [id] => object
-// 0x5/ (event)
-//   -> [timestamp][id] => event
-// 0x6/ (input)
-//   -> input object id
-// 0x7/ (region)
-//   -> [id] => region data
-// 0x8/ (coordination)
-//   -> [id] => coordination state
+func unmarshalState(b []byte, v interface{}) error {
+    p := codec.NewReader(b, len(b))
+    if err := p.UnpackObject(v); err != nil {
+        return err
+    }
+    return p.Err()
+}
+
+type ReadState func(context.Context, [][]byte) ([][]byte, []error)
 
 const (
    // Active state
@@ -61,6 +61,7 @@ var (
    feeKey      = []byte{feePrefix}
 
    ErrInvalidCoordination = errors.New("invalid coordination state")
+   ErrInsufficientBalance = errors.New("insufficient balance")
 )
 
 // New coordination functions
@@ -100,7 +101,7 @@ func GetCoordinationState(
    }
 
    var state CoordinationState
-   if err := codec.Unmarshal(v, &state); err != nil {
+   if err := unmarshalState(v, &state); err != nil {
        return nil, err
    }
    return &state, nil
@@ -112,37 +113,28 @@ func SetCoordinationState(
    state *CoordinationState,
 ) error {
    k := []byte{coordPrefix}
-   v, err := codec.Marshal(state)
+   v, err := marshalState(state)
    if err != nil {
        return err
    }
    return mu.Insert(ctx, k, v)
 }
 
-func UpdateTaskState(
-   ctx context.Context,
-   mu state.Mutable,
-   taskID string,
-   status string,
-   workers []coordination.WorkerID,
-   attestations [][2][]byte,
-) error {
-   state, err := GetCoordinationState(ctx, mu)
-   if err != nil {
-       return err
-   }
-
-   state.Tasks[taskID] = TaskState{
-       Status:       status,
-       Workers:      workers,
-       Attestations: attestations,
-       Timestamp:    string(timestampKey),
-   }
-
-   return SetCoordinationState(ctx, mu, state)
+func BalanceKey(addr codec.Address) []byte {
+    // Since codec.Address is a []byte, we need to cast it properly
+    addrBytes := []byte(addr)
+    k := make([]byte, 1+len(addrBytes))
+    k[0] = balancePrefix
+    copy(k[1:], addrBytes)
+    return k
 }
 
-// Used to serve RPC queries
+func setBalance(ctx context.Context, mu state.Mutable, key []byte, balance uint64) error {
+    val := make([]byte, 8)
+    binary.BigEndian.PutUint64(val, balance)
+    return mu.Insert(ctx, key, val)
+}
+
 func GetBalanceFromState(
    ctx context.Context,
    f ReadState,
@@ -181,8 +173,6 @@ func SetBalance(
    return setBalance(ctx, mu, k, balance)
 }
 
-
-// SubBalance example
 func SubBalance(
     ctx context.Context,
     st state.Mutable,
@@ -198,23 +188,23 @@ func SubBalance(
     }
     newBal := oldBal - amount
     if newBal == 0 {
-        // remove key if zero
         return 0, st.Remove(ctx, BalanceKey(addr))
     }
     err = SetBalance(ctx, st, addr, newBal)
     return newBal, err
 }
 
-// GetBalance example
 func GetBalance(
     ctx context.Context,
-    r state.KeyValueReader,
+    r state.Immutable,
     addr codec.Address,
 ) (uint64, error) {
     val, err := r.GetValue(ctx, BalanceKey(addr))
-    if err != nil {
-        // treat “not found” as zero
+    if errors.Is(err, database.ErrNotFound) {
         return 0, nil
+    }
+    if err != nil {
+        return 0, err
     }
     if len(val) < 8 {
         return 0, fmt.Errorf("corrupt balance data")
@@ -270,13 +260,12 @@ func GetObject(
    }
 
    var obj map[string][]byte
-   if err := codec.Unmarshal(v, &obj); err != nil {
+   if err := unmarshalState(v, &obj); err != nil {
        return nil, err
    }
    return obj, nil
 }
 
-// Modified object storage to include coordination
 func SetObject(
    ctx context.Context,
    mu state.Mutable,
@@ -285,7 +274,7 @@ func SetObject(
    coordState *CoordinationState,
 ) error {
    k := ObjectKey(id)
-   v, err := codec.Marshal(obj)
+   v, err := marshalState(obj)
    if err != nil {
        return err
    }
@@ -305,33 +294,30 @@ func SetObject(
    return nil
 }
 
-// Modified event queue to include coordination
 func QueueEvent(
    ctx context.Context,
    mu state.Mutable,
    id string,
    functionCall string,
    parameters []byte,
-   attestations [2]actions.TEEAttestation,
+   attestations [2]core.TEEAttestation,
    coordState *CoordinationState,
 ) error {
-   k := EventKey(attestations[0].Timestamp, id)
+   k := EventKey(attestations[0].Timestamp.Format(time.RFC3339), id)
    event := map[string]interface{}{
        "function_call": functionCall,
        "parameters":    parameters,
        "attestations": attestations,
    }
-   v, err := codec.Marshal(event)
+   v, err := marshalState(event)
    if err != nil {
        return err
    }
 
-   // Store event
    if err := mu.Insert(ctx, k, v); err != nil {
        return err
    }
 
-   // Update coordination state
    if coordState != nil {
        taskID := fmt.Sprintf("event:%s:%s", id, attestations[0].Timestamp)
        workers := []coordination.WorkerID{
@@ -351,29 +337,6 @@ func QueueEvent(
    return nil
 }
 
-// Helper function to validate coordination state
-func ValidateCoordinationState(state *CoordinationState) error {
-   if state == nil {
-       return ErrInvalidCoordination
-   }
-   
-   if len(state.Workers) < 2 {
-       return fmt.Errorf("%w: insufficient workers", ErrInvalidCoordination)
-   }
-   
-   for taskID, task := range state.Tasks {
-       if len(task.Workers) < 2 {
-           return fmt.Errorf("%w: insufficient workers for task %s", ErrInvalidCoordination, taskID)
-       }
-       if len(task.Attestations) == 0 {
-           return fmt.Errorf("%w: missing attestations for task %s", ErrInvalidCoordination, taskID)
-       }
-   }
-   
-   return nil
-}
-
-
 func GetEvent(
    ctx context.Context,
    im state.Immutable,
@@ -390,7 +353,7 @@ func GetEvent(
    }
 
    var event map[string]interface{}
-   if err := codec.Unmarshal(v, &event); err != nil {
+   if err := unmarshalState(v, &event); err != nil {
        return nil, err
    }
    return event, nil
@@ -420,15 +383,6 @@ func SetInputObject(
    return mu.Insert(ctx, k, []byte(id))
 }
 
-type ObjectState struct {
-    Code        []byte    `json:"code"`
-    Storage     []byte    `json:"storage"`
-    RegionID    string    `json:"region_id"`
-    Events      []string  `json:"events"`
-    LastUpdated time.Time `json:"last_updated"`
-    Status      string    `json:"status"`
-}
-
 func RegionKey(id string) []byte {
     k := make([]byte, 1+len(id))
     k[0] = regionPrefix
@@ -447,7 +401,7 @@ func GetRegion(ctx context.Context, im state.Immutable, id string) (map[string]i
     }
 
     var region map[string]interface{}
-    if err := codec.Unmarshal(v, &region); err != nil {
+    if err := unmarshalState(v, &region); err != nil {
         return nil, err
     }
     return region, nil
@@ -460,9 +414,54 @@ func SetRegion(
    region map[string]interface{},
 ) error {
    k := RegionKey(id)
-   v, err := codec.Marshal(region)
+   v, err := marshalState(region)
    if err != nil {
        return err
    }
    return mu.Insert(ctx, k, v)
+}
+
+func UpdateTaskState(
+   ctx context.Context,
+   mu state.Mutable,
+   taskID string,
+   status string,
+   workers []coordination.WorkerID,
+   attestations [][2][]byte,
+) error {
+   state, err := GetCoordinationState(ctx, mu)
+   if err != nil {
+       return err
+   }
+
+   state.Tasks[taskID] = TaskState{
+       Status:       status,
+       Workers:      workers,
+       Attestations: attestations,
+       Timestamp:    string(timestampKey),
+   }
+
+   return SetCoordinationState(ctx, mu, state)
+}
+
+// Helper function to validate coordination state
+func ValidateCoordinationState(state *CoordinationState) error {
+   if state == nil {
+       return ErrInvalidCoordination
+   }
+   
+   if len(state.Workers) < 2 {
+       return fmt.Errorf("%w: insufficient workers", ErrInvalidCoordination)
+   }
+   
+   for taskID, task := range state.Tasks {
+       if len(task.Workers) < 2 {
+           return fmt.Errorf("%w: insufficient workers for task %s", ErrInvalidCoordination, taskID)
+       }
+       if len(task.Attestations) == 0 {
+           return fmt.Errorf("%w: missing attestations for task %s", ErrInvalidCoordination, taskID)
+       }
+   }
+   
+   return nil
 }

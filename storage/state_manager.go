@@ -18,10 +18,6 @@ import (
     "github.com/rhombus-tech/vm/core"
 )
 
-var (
-    ErrInsufficientBalance = errors.New("insufficient balance")
-)
-
 // StateManager wraps lower-level storage operations
 type StateManager struct {
     backingStore state.Mutable // Changed from state.State
