@@ -2,8 +2,7 @@ syntax = "proto3";
 
 package teeservice;
 
-// This line must match your import path and the alias you use in Go
-option go_package = "github.com/rhombus-tech/vm/tee/pb;pb";
+option go_package = "github.com/rhombus-tech/vm/tee/proto/pb;pb";
 
 service TeeExecution {
     rpc Execute(ExecutionRequest) returns (ExecutionResult);

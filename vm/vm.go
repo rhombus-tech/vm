@@ -3,17 +3,15 @@
 package vm
 
 import (
-    "github.com/ava-labs/avalanchego/utils/wrappers"
-    "github.com/ava-labs/hypersdk/auth"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/genesis"
-    "github.com/ava-labs/hypersdk/vm"
-    "github.com/ava-labs/hypersdk/vm/defaultvm"
+	"fmt"
 
-    "github.com/rhombus-tech/vm/actions"
-    "github.com/rhombus-tech/vm/consts"
-    "github.com/rhombus-tech/vm/storage"
+	"github.com/ava-labs/avalanchego/utils/wrappers"
+	"github.com/ava-labs/hypersdk/auth"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/vm"
+
+	"github.com/rhombus-tech/vm/actions"
 )
 
 var (
@@ -49,24 +47,16 @@ func init() {
     }
 }
 
-// With returns a vm.Option that configures the VM
-func With() vm.Option {
-    return func(v *vm.VM) error {
-        return nil
-    }
-}
 
-// NewWithOptions returns a VM with the specified options
-func New(options ...vm.Option) (*vm.VM, error) {
-    options = append(options, With())
-    return defaultvm.New(
-        consts.Version,
-        genesis.DefaultGenesisFactory{},
-        &storage.StateManager{},
-        ActionParser,
-        AuthParser,
-        OutputParser,
-        auth.Engines(),
-        options...,
+func With(name string, defaultValue interface{}) vm.Option {
+    return vm.NewOption(
+        name,
+        defaultValue,
+        func(v *vm.VM, cfg interface{}) error {
+            fmt.Printf("Received config for [%s]: %v\n", name, cfg)
+            // Your configuration logic here
+            return nil  // Return error directly instead of using NewOpt
+        },
     )
 }
+

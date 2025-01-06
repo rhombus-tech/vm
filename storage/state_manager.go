@@ -5,7 +5,6 @@ import (
     "context"
     "fmt"
     "time"
-    "errors"
 
     "github.com/ava-labs/avalanchego/database"
     "github.com/ava-labs/hypersdk/codec"

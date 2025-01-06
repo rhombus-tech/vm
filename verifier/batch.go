@@ -16,7 +16,6 @@ import (
     "github.com/ava-labs/hypersdk/state"
 
     "github.com/rhombus-tech/vm/coordination"
-    "github.com/rhombus-tech/vm/storage"
 )
 
 var (

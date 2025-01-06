@@ -92,15 +92,22 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
         return fmt.Errorf("SEV Execute failed: %w", err)
     }
 
-    // If we only need sgxResult.Timestamp, underscore it so the compiler won't complain:
-    sgxTime := sgxResult.Timestamp
-    _ = sgxTime
+    // Convert attestations and verify
+    sgxAtts, err := protoToCoreAttestations(sgxResult.Attestations)
+    if err != nil {
+        return fmt.Errorf("failed to convert SGX attestations: %w", err)
+    }
+    
+    sevAtts, err := protoToCoreAttestations(sevResult.Attestations)
+    if err != nil {
+        return fmt.Errorf("failed to convert SEV attestations: %w", err)
+    }
 
-    // Verify both attestation sets if your verifier has an exported method
-    if err := c.verifier.VerifyAttestationPair(ctx, sgxResult.Attestations, nil); err != nil {
+    // Verify both attestation sets
+    if err := c.verifier.VerifyAttestationPair(ctx, sgxAtts, nil); err != nil {
         return fmt.Errorf("SGX attestation verify failed: %w", err)
     }
-    if err := c.verifier.VerifyAttestationPair(ctx, sevResult.Attestations, nil); err != nil {
+    if err := c.verifier.VerifyAttestationPair(ctx, sevAtts, nil); err != nil {
         return fmt.Errorf("SEV attestation verify failed: %w", err)
     }
 
@@ -109,18 +116,6 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
         return err
     }
 
-    // Possibly build a separate 'Event'
-    sgxEvent := &pb.Event{
-        Id:           action.IDTo,
-        FunctionCall: action.FunctionCall,
-        Parameters:   action.Parameters,
-        RegionId:     action.RegionID,
-        Timestamp:    sgxTime,
-        Attestations: sgxResult.Attestations,
-    }
-    // Do something with sgxEvent if needed...
-
-    // Return success
     return nil
 }
 

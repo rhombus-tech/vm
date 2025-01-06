@@ -3,37 +3,27 @@
 package storage
 
 import (
-    "context"
-    "encoding/binary"
-    "errors"
-    "fmt"
-    "time"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
 
-    "github.com/ava-labs/avalanchego/database"
-    smath "github.com/ava-labs/avalanchego/utils/math"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/consts"
-    "github.com/ava-labs/hypersdk/state"
-    "github.com/rhombus-tech/vm/coordination"
-    "github.com/rhombus-tech/vm/actions"
-    "github.com/rhombus-tech/vm/core"
+	"github.com/ava-labs/avalanchego/database"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/state"
+	"github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/core"
 )
 
 // Marshal/Unmarshal helpers
 func marshalState(v interface{}) ([]byte, error) {
-    p := codec.NewWriter(0, consts.MaxInt)
-    if err := p.PackObject(v); err != nil {
-        return nil, err
-    }
-    return p.Bytes(), p.Err()
+    return json.Marshal(v)
 }
 
 func unmarshalState(b []byte, v interface{}) error {
-    p := codec.NewReader(b, len(b))
-    if err := p.UnpackObject(v); err != nil {
-        return err
-    }
-    return p.Err()
+    return json.Unmarshal(b, v)
 }
 
 type ReadState func(context.Context, [][]byte) ([][]byte, []error)
@@ -121,11 +111,10 @@ func SetCoordinationState(
 }
 
 func BalanceKey(addr codec.Address) []byte {
-    // Since codec.Address is a []byte, we need to cast it properly
-    addrBytes := []byte(addr)
-    k := make([]byte, 1+len(addrBytes))
+    addrStr := addr.String()
+    k := make([]byte, 1+len(addrStr))
     k[0] = balancePrefix
-    copy(k[1:], addrBytes)
+    copy(k[1:], []byte(addrStr))
     return k
 }
 
@@ -171,6 +160,21 @@ func SetBalance(
 ) error {
    k := BalanceKey(addr)
    return setBalance(ctx, mu, k, balance)
+}
+
+func AddBalance(ctx context.Context, mu state.Mutable, addr codec.Address, amount uint64) (uint64, error) {
+    balance, err := GetBalance(ctx, mu, addr)
+    if err != nil {
+        return 0, err
+    }
+    newBalance := balance + amount
+    if newBalance < balance { // Check for overflow
+        return 0, fmt.Errorf("balance overflow")
+    }
+    if err := SetBalance(ctx, mu, addr, newBalance); err != nil {
+        return 0, err
+    }
+    return newBalance, nil
 }
 
 func SubBalance(

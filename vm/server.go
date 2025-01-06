@@ -13,7 +13,6 @@ import (
 
     // Local packages
     "github.com/rhombus-tech/vm/consts"
-    "github.com/rhombus-tech/vm/storage"
 )
 
 // JSONRPCEndpoint is the path for JSON RPC requests (e.g. /morpheusapi).

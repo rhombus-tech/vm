@@ -5,7 +5,7 @@ import (
     "fmt"
     "time"
 
-    pb "github.com/rhombus-tech/vm/tee/proto"
+    pb "github.com/rhombus-tech/vm/tee/proto/pb"
     "github.com/rhombus-tech/vm/core"
 )
 
@@ -134,4 +134,39 @@ func (e *ShuttleEvent) Validate() error {
     }
 
     return nil
+}
+
+// Convert from proto TEEAttestation to core TEEAttestation
+func protoToCoreAttestation(proto *pb.TEEAttestation) (core.TEEAttestation, error) {
+    timestamp, err := time.Parse(time.RFC3339, proto.Timestamp)
+    if err != nil {
+        return core.TEEAttestation{}, err
+    }
+    
+    return core.TEEAttestation{
+        EnclaveID:   proto.EnclaveId,
+        Measurement: proto.Measurement,
+        Timestamp:   timestamp,
+        Data:        proto.Data,
+        Signature:   proto.Signature,
+        RegionProof: proto.RegionProof,
+    }, nil
+}
+
+// Convert slice of proto attestations to fixed-size array of core attestations
+func protoToCoreAttestations(protos []*pb.TEEAttestation) ([2]core.TEEAttestation, error) {
+    if len(protos) != 2 {
+        return [2]core.TEEAttestation{}, fmt.Errorf("expected 2 attestations, got %d", len(protos))
+    }
+    
+    var result [2]core.TEEAttestation
+    for i, proto := range protos {
+        converted, err := protoToCoreAttestation(proto)
+        if err != nil {
+            return [2]core.TEEAttestation{}, err
+        }
+        result[i] = converted
+    }
+    
+    return result, nil
 }

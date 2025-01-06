@@ -12,10 +12,15 @@ type Executor struct {
     platform Platform 
 }
 
-func NewExecutor(config Config) (*Executor, error) {
+func NewExecutor(config *Config) (*Executor, error) {
+    platform, err := NewPlatform(config.EnclaveType, config)
+    if err != nil {
+        return nil, err
+    }
+
     return &Executor{
-        config: config,
-        platform: NewPlatform(config.EnclaveType),
+        platform: platform,
+        config:   config,
     }, nil
 }
 
