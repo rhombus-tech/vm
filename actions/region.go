@@ -11,7 +11,7 @@ import (
     "github.com/ava-labs/hypersdk/state"
     
     "github.com/rhombus-tech/vm"       
-    "github.com/rhombus-tech/vm/types" 
+    "github.com/rhombus-tech/vm/core" 
     "github.com/rhombus-tech/vm/consts"
 )
 
@@ -36,13 +36,13 @@ var (
 
 type CreateRegionAction struct {
     RegionID     string                  `serialize:"true" json:"region_id"`
-    TEEs         []types.TEEAddress      `serialize:"true" json:"tees"`
-    Attestations [2]types.TEEAttestation `serialize:"true" json:"attestations"`
+    TEEs         []core.TEEAddress      `serialize:"true" json:"tees"`
+    Attestations [2]core.TEEAttestation `serialize:"true" json:"attestations"`
 }
 
 type UpdateRegionAction struct {
     RegionID     string
-    Attestations [2]types.TEEAttestation
+    Attestations [2]core.TEEAttestation
 }
 
 type CreateRegionResult struct {

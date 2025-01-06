@@ -15,7 +15,7 @@ import (
     "github.com/ava-labs/hypersdk/state"
     
     "github.com/rhombus-tech/vm"         
-    "github.com/rhombus-tech/vm/types"
+    "github.com/rhombus-tech/vm/core"
     "github.com/rhombus-tech/vm/consts"
     "github.com/rhombus-tech/vm/coordination"
 )
@@ -58,7 +58,7 @@ type SendEventAction struct {
     IDTo         string                  `serialize:"true" json:"id_to"`
     FunctionCall string                  `serialize:"true" json:"function_call"`
     Parameters   []byte                  `serialize:"true" json:"parameters"`
-    Attestations [2]types.TEEAttestation `serialize:"true" json:"attestations"`
+    Attestations [2]core.TEEAttestation `serialize:"true" json:"attestations"`
     RegionID     string                  `serialize:"true" json:"region_id"`
 }
 
@@ -163,7 +163,7 @@ func (c *CreateObjectAction) Execute(
     }
 
     // Create object state
-    obj := &types.ObjectState{
+    obj := &core.ObjectState{
         Code:        c.Code,
         Storage:     c.Storage,
         RegionID:    c.RegionID,
@@ -267,7 +267,7 @@ func (s *SendEventAction) Execute(
     }
 
     // Verify workers are authorized for the region
-    tees := region["tees"].([]types.TEEAddress)
+    tees := region["tees"].([]core.TEEAddress)
     for _, att := range s.Attestations {
         found := false
         for _, tee := range tees {
@@ -288,7 +288,7 @@ func (s *SendEventAction) Execute(
 
     // Create event record
     eventID := fmt.Sprintf("%s:%s", s.IDTo, s.Attestations[0].Timestamp.Format(time.RFC3339))
-    event := &types.Event{
+    event := &core.Event{
         FunctionCall: s.FunctionCall,
         Parameters:   s.Parameters,
         Attestations: s.Attestations,
@@ -432,7 +432,7 @@ func ParseSetInputObject(p *codec.Packer) (chain.Action, error) {
 }
 
 // Helper functions
-func verifyAttestationPair(attestations [2]types.TEEAttestation) error {
+func verifyAttestationPair(attestations [2]core.TEEAttestation) error {
     // Verify both attestations exist and have valid enclave IDs
     if len(attestations[0].EnclaveID) == 0 || len(attestations[1].EnclaveID) == 0 {
         return ErrMissingAttestation
@@ -501,7 +501,7 @@ func submitTask(
 }
 
 // State management helpers
-func getObjectState(ctx context.Context, mu state.Mutable, id string) (*types.ObjectState, error) {
+func getObjectState(ctx context.Context, mu state.Mutable, id string) (*core.ObjectState, error) {
     stateManager := mu.(vm.StateManager)
     
     obj, err := stateManager.GetObject(ctx, mu, id)
@@ -514,14 +514,14 @@ func getObjectState(ctx context.Context, mu state.Mutable, id string) (*types.Ob
     return obj, nil
 }
 
-func setObjectState(ctx context.Context, mu state.Mutable, id string, state *types.ObjectState) error {
+func setObjectState(ctx context.Context, mu state.Mutable, id string, state *core.ObjectState) error {
     stateManager := mu.(vm.StateManager)
     return stateManager.SetObject(ctx, mu, id, state)
 }
 
 // Additional helper for region verification
-func verifyRegionTEEs(region map[string]interface{}, attestations [2]types.TEEAttestation) error {
-    tees, ok := region["tees"].([]types.TEEAddress)
+func verifyRegionTEEs(region map[string]interface{}, attestations [2]core.TEEAttestation) error {
+    tees, ok := region["tees"].([]core.TEEAddress)
     if !ok {
         return fmt.Errorf("invalid region TEE format")
     }

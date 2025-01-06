@@ -3,7 +3,7 @@ package tee
 
 import (
     "context"
-    "github.com/rhombus-tech/vm/types"
+    "github.com/rhombus-tech/vm/core"
 )
 
 type Executor struct {
@@ -19,7 +19,7 @@ func NewExecutor(config Config) (*Executor, error) {
     }, nil
 }
 
-func (e *Executor) Execute(ctx context.Context, input []byte) (*types.ExecutionResult, error) {
+func (e *Executor) Execute(ctx context.Context, input []byte) (*core.ExecutionResult, error) {
     // Execute WASM in TEE
     result, err := e.platform.Execute(ctx, e.wasmModule, input)
     if err != nil {
@@ -32,7 +32,7 @@ func (e *Executor) Execute(ctx context.Context, input []byte) (*types.ExecutionR
         return nil, err
     }
 
-    return &types.ExecutionResult{
+    return &core.ExecutionResult{
         ResultHash: result.Hash,
         Result: result.Data,
         Attestation: attestation,

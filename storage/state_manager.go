@@ -1,3 +1,4 @@
+// storage/state_manager.go
 package storage
 
 import (
@@ -5,55 +6,40 @@ import (
     "fmt"
     "time"
 
-    // Import the HyperSDK state package that defines KeyValueReader, state.Mutable, etc.
-    "github.com/ava-labs/hypersdk/state"
-    "github.com/ava-labs/hypersdk/codec"
     "github.com/ava-labs/hypersdk/chain"
-
-    // If your coordination package is separate:
-    "github.com/rhombus-tech/vm/coordination"
-
-    // If you need a TEE client
-    "github.com/rhombus-tech/vm/tee"
-
-    // If you have a merkleDB for the coordinator
+    "github.com/ava-labs/hypersdk/codec"
+    "github.com/ava-labs/hypersdk/state"
+    "github.com/ava-labs/avalanchego/database"
     "github.com/ava-labs/avalanchego/x/merkledb"
-)
 
-// StateManager implements chain.StateManager.
-var _ chain.StateManager = (*StateManager)(nil)
+    "github.com/rhombus-tech/vm/core"
+    "github.com/rhombus-tech/vm/coordination"
+)
 
 type StateManager struct {
     // The underlying state
-    // note: if you plan to do writes, store a `state.Mutable`
-    // or store both an Immutable + a separate Mutable if needed
     backingStore state.KeyValueReader
 
     // TEE client if needed
     teeClient *tee.Client
 
-    // coordinator if needed
+    // coordinator 
     coordinator *coordination.Coordinator
 }
 
-// NewStateManager is your constructor. 
-// (dbForCoord must be typed properly, e.g. a *merkledb.MerkleDB if needed)
+// NewStateManager creates a new state manager
 func NewStateManager(
     store state.KeyValueReader,
     teeEndpoint string,
     dbForCoord *merkledb.MerkleDB,
 ) (*StateManager, error) {
-    // TEE client creation (assuming tee.NewClient wants 3 args)
-    // if you don't need region or a verifier, pass empty/nil
+    // TEE client creation
     teeClient, err := tee.NewClient(teeEndpoint, "", nil)
     if err != nil {
         return nil, fmt.Errorf("failed to create TEE client: %w", err)
     }
 
-    // If coordinator.NewCoordinator returns (coord, error) 
-    // but wants a *merkledb.MerkleDB, do:
     coordCfg := &coordination.Config{
-        // fill in
         MinWorkers: 2,
         MaxWorkers: 10,
         WorkerTimeout: 30 * time.Second,
@@ -73,6 +59,9 @@ func NewStateManager(
         coordinator: coord,
     }, nil
 }
+
+// Ensure StateManager implements core.StateManager
+var _ core.StateManager = (*StateManager)(nil)
 
 //----------------------
 // chain.StateManager methods
@@ -100,6 +89,7 @@ func (sm *StateManager) Insert(ctx context.Context, key, value []byte) error {
     }
     return mutable.Insert(ctx, key, value)
 }
+
 func (sm *StateManager) Remove(ctx context.Context, key []byte) error {
     mutable, ok := sm.backingStore.(state.Mutable)
     if !ok {
@@ -108,62 +98,92 @@ func (sm *StateManager) Remove(ctx context.Context, key []byte) error {
     return mutable.Remove(ctx, key)
 }
 
-// If your chain.StateManager requires the following for balance ops:
-func (sm *StateManager) AddBalance(
-    ctx context.Context,
-    addr codec.Address,
-    st state.Mutable,
-    amount uint64,
-    createAccount bool,
-) error {
-    // call your local "AddBalance" free function
-    _, err := AddBalance(ctx, st, addr, amount, createAccount)
-    return err
+// Core interface implementations
+func (sm *StateManager) GetObject(ctx context.Context, mu state.Mutable, id string) (*core.ObjectState, error) {
+    k := ObjectKey(id)
+    v, err := mu.GetValue(ctx, k)
+    if errors.Is(err, database.ErrNotFound) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+
+    var obj core.ObjectState
+    if err := codec.Unmarshal(v, &obj); err != nil {
+        return nil, err
+    }
+    return &obj, nil
 }
 
-func (sm *StateManager) Deduct(
-    ctx context.Context,
-    addr codec.Address,
-    st state.Mutable,
-    amount uint64,
-) error {
-    _, err := SubBalance(ctx, st, addr, amount)
-    return err
-}
-
-// If your chain.StateManager requires “CanDeduct”
-func (sm *StateManager) CanDeduct(
-    ctx context.Context,
-    addr codec.Address,
-    st state.Immutable,
-    amount uint64,
-) error {
-    bal, err := GetBalance(ctx, st, addr)
+func (sm *StateManager) SetObject(ctx context.Context, mu state.Mutable, id string, obj *core.ObjectState) error {
+    k := ObjectKey(id)
+    v, err := codec.Marshal(obj)
     if err != nil {
         return err
     }
-    if bal < amount {
-        return fmt.Errorf("insufficient balance")
-    }
-    return nil
+    return mu.Insert(ctx, k, v)
 }
 
-// If you need to supply which keys you’ll sponsor
-func (sm *StateManager) SponsorStateKeys(addr codec.Address) state.Keys {
-    return state.Keys{
-        string(BalanceKey(addr)): state.Read | state.Write,
+func (sm *StateManager) ObjectExists(ctx context.Context, mu state.Mutable, id string) (bool, error) {
+    obj, err := sm.GetObject(ctx, mu, id)
+    if err != nil {
+        return false, err
     }
-}
-func (sm *StateManager) GlobalStateKeys() state.Keys {
-    return state.Keys{
-        string(sm.HeightKey()):    state.Read | state.Write,
-        string(sm.TimestampKey()): state.Read | state.Write,
-        string(sm.FeeKey()):       state.Read | state.Write,
-    }
+    return obj != nil, nil
 }
 
-//----------------------------------------
-// Helpers
+func (sm *StateManager) SetEvent(ctx context.Context, mu state.Mutable, id string, event *core.Event) error {
+    k := EventKey(id)
+    v, err := codec.Marshal(event)
+    if err != nil {
+        return err
+    }
+    return mu.Insert(ctx, k, v)
+}
+
+func (sm *StateManager) GetRegion(ctx context.Context, mu state.Mutable, id string) (map[string]interface{}, error) {
+    k := RegionKey(id)
+    v, err := mu.GetValue(ctx, k)
+    if errors.Is(err, database.ErrNotFound) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
+
+    var region map[string]interface{}
+    if err := codec.Unmarshal(v, &region); err != nil {
+        return nil, err
+    }
+    return region, nil
+}
+
+func (sm *StateManager) SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error {
+    k := RegionKey(id)
+    v, err := codec.Marshal(region)
+    if err != nil {
+        return err
+    }
+    return mu.Insert(ctx, k, v)
+}
+
+func (sm *StateManager) RegionExists(ctx context.Context, mu state.Mutable, id string) (bool, error) {
+    region, err := sm.GetRegion(ctx, mu, id)
+    if err != nil {
+        return false, err
+    }
+    return region != nil, nil
+}
+
+func (sm *StateManager) SetInputObject(ctx context.Context, mu state.Mutable, id string) error {
+    k := InputObjectKey()
+    return mu.Insert(ctx, k, []byte(id))
+}
+
+func (sm *StateManager) GetCoordinator() core.Coordinator {
+    return sm.coordinator
+}
 
 func (sm *StateManager) Close() error {
     var errs []error
@@ -181,4 +201,55 @@ func (sm *StateManager) Close() error {
         return fmt.Errorf("multiple errors: %v", errs)
     }
     return nil
+}
+
+func (sm *StateManager) AddBalance(
+    ctx context.Context,
+    addr codec.Address,
+    st state.Mutable,
+    amount uint64,
+    createAccount bool,
+) error {
+    _, err := AddBalance(ctx, st, addr, amount, createAccount)
+    return err
+}
+
+func (sm *StateManager) Deduct(
+    ctx context.Context,
+    addr codec.Address,
+    st state.Mutable,
+    amount uint64,
+) error {
+    _, err := SubBalance(ctx, st, addr, amount)
+    return err
+}
+
+func (sm *StateManager) CanDeduct(
+    ctx context.Context,
+    addr codec.Address,
+    st state.Immutable,
+    amount uint64,
+) error {
+    bal, err := GetBalance(ctx, st, addr)
+    if err != nil {
+        return err
+    }
+    if bal < amount {
+        return fmt.Errorf("insufficient balance")  
+    }
+    return nil
+}
+
+func (sm *StateManager) SponsorStateKeys(addr codec.Address) state.Keys {
+    return state.Keys{
+        string(BalanceKey(addr)): state.Read | state.Write,
+    }
+}
+
+func (sm *StateManager) GlobalStateKeys() state.Keys {
+    return state.Keys{
+        string(sm.HeightKey()):    state.Read | state.Write,
+        string(sm.TimestampKey()): state.Read | state.Write,
+        string(sm.FeeKey()):       state.Read | state.Write,
+    }
 }
