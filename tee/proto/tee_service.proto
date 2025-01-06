@@ -1,31 +1,45 @@
-// tee/proto/tee_service.proto
 syntax = "proto3";
+
 package teeservice;
-option go_package = "github.com/rhombus-tech/vm/tee";
+
+// This line must match your import path and the alias you use in Go
+option go_package = "github.com/rhombus-tech/vm/tee/pb;pb";
 
 service TeeExecution {
-    // Maps to SendEventAction
     rpc Execute(ExecutionRequest) returns (ExecutionResult);
 }
 
 message ExecutionRequest {
-    string id_to = 1;  // Matches SendEventAction.IDTo
-    string function_call = 2;  // Matches SendEventAction.FunctionCall
-    bytes parameters = 3;  // Matches SendEventAction.Parameters
-    string region_id = 4;  // Matches SendEventAction.RegionID
+    string id_to         = 1;
+    string function_call = 2;
+    bytes  parameters    = 3;
+    string region_id     = 4;
 }
 
 message ExecutionResult {
-    repeated TEEAttestation attestations = 1;  // Matches SendEventAction.Attestations
-    bytes state_hash = 2;  // For verification
-    bytes result = 3;  // Execution result
+    // If you want a timestamp in the result:
+    string timestamp = 1; 
+
+    repeated TEEAttestation attestations = 2;
+    bytes state_hash = 3;
+    bytes result     = 4;
+}
+
+// If you really do want a separate Event message:
+message Event {
+    string id            = 1;
+    string function_call = 2;
+    bytes  parameters    = 3;
+    string region_id     = 4;
+    string timestamp     = 5;
+    repeated TEEAttestation attestations = 6;
 }
 
 message TEEAttestation {
-    bytes enclave_id = 1;  // Matches TEEAttestation.EnclaveID
-    bytes measurement = 2;  // Matches TEEAttestation.Measurement 
-    string timestamp = 3;   // Matches TEEAttestation.Timestamp
-    bytes data = 4;        // Matches TEEAttestation.Data
-    bytes signature = 5;    // Matches TEEAttestation.Signature
-    bytes region_proof = 6; // Matches TEEAttestation.RegionProof
+    bytes  enclave_id   = 1;
+    bytes  measurement  = 2;
+    string timestamp    = 3; 
+    bytes  data         = 4;
+    bytes  signature    = 5;
+    bytes  region_proof = 6;
 }

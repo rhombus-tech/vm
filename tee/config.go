@@ -1,4 +1,4 @@
-/ tee/config.go
+// tee/config.go
 package tee
 
 type Config struct {

@@ -7,7 +7,6 @@ import "errors"
 var (
     // Existing errors
     ErrInvalidAddress = errors.New("invalid address")
-    ErrInvalidBalance = errors.New("invalid balance")
 
     // Object errors
     ErrObjectNotFound  = errors.New("object not found")

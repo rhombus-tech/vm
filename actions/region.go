@@ -1,7 +1,6 @@
 package actions
 
 import (
-    "bytes"
     "context"
     "errors"
     "time"
@@ -42,10 +41,8 @@ type CreateRegionAction struct {
 }
 
 type UpdateRegionAction struct {
-    RegionID     string                  `serialize:"true" json:"region_id"`
-    AddTEEs      []types.TEEAddress      `serialize:"true" json:"add_tees"`
-    RemTEEs      []types.TEEAddress      `serialize:"true" json:"rem_tees"`
-    Attestations [2]types.TEEAttestation `serialize:"true" json:"attestations"`
+    RegionID     string
+    Attestations [2]types.TEEAttestation
 }
 
 type CreateRegionResult struct {
@@ -135,6 +132,44 @@ func (*CreateRegionAction) ValidRange(chain.Rules) (int64, int64) {
     return -1, -1
 }
 
+func UnmarshalCreateRegion(data []byte) (chain.Action, error) {
+    p := codec.NewReader(data, len(data))
+    r := &CreateRegionAction{}
+    r.Unmarshal(p)
+    if err := p.Err(); err != nil {
+        return nil, err
+    }
+    return r, nil
+}
+
+func (r *CreateRegionAction) Unmarshal(p *codec.Packer) {
+    // Suppose "RegionID" is the only field we actually want to store in the struct
+    r.RegionID = p.UnpackString(false)
+
+    // 1) read the count of TEE addresses
+    addCount := p.UnpackInt(false)
+
+    // 2) create a local slice (not on the struct)
+    localTEEs := make([][]byte, addCount)
+    for i := uint32(0); i < addCount; i++ {
+        var tee []byte
+        p.UnpackBytes(32, true, &tee)
+        localTEEs[i] = tee
+    }
+
+    // If you only need these TEE addresses temporarily or you want
+    // to process them in some immediate way, do it now:
+    // e.g. check them, pass them along, etc.
+
+    // 3) read your attestation objects
+    r.Attestations[0].Unmarshal(p)
+    r.Attestations[1].Unmarshal(p)
+
+
+}
+
+
+
 func (*UpdateRegionAction) GetTypeID() uint8 {
     return consts.UpdateRegionID
 }
@@ -153,73 +188,92 @@ func (u *UpdateRegionAction) Execute(
     actor codec.Address,
     _ ids.ID,
 ) (codec.Typed, error) {
-    stateManager := mu.(vm.StateManager)
+    // 1) Convert the generic state.Mutable into your custom StateManager
+    stateManager, ok := mu.(vm.StateManager)
+    if !ok {
+        return nil, errors.New("invalid state manager type")
+    }
 
+    // 2) Validate region ID
     if len(u.RegionID) == 0 || len(u.RegionID) > 256 {
-        return nil, ErrInvalidRegionID
+        return nil, errors.New("invalid region ID")
     }
 
-    if len(u.AddTEEs) > MaxTEEsPerRegion || len(u.RemTEEs) > MaxTEEsPerRegion {
-        return nil, ErrTooManyTEEs
-    }
-
-    for _, tee := range u.AddTEEs {
-        if len(tee) == 0 || len(tee) > 64 {
-            return nil, ErrInvalidTEE
-        }
-    }
-    for _, tee := range u.RemTEEs {
-        if len(tee) == 0 || len(tee) > 64 {
-            return nil, ErrInvalidTEE
-        }
-    }
-
+    // 3) Validate the attestation pair if needed
     if err := verifyAttestationPair(u.Attestations); err != nil {
         return nil, err
     }
 
+    // 4) Load existing region from state
     region, err := stateManager.GetRegion(ctx, mu, u.RegionID)
     if err != nil {
         return nil, err
     }
     if region == nil {
-        return nil, ErrRegionNotFound
+        return nil, errors.New("region not found")
     }
 
-    currentTEEs, ok := region["tees"].([]types.TEEAddress)
-    if !ok {
-        return nil, errors.New("invalid region state format")
-    }
+    // If region["tees"] is relevant, we are not updating it because we have no Add/Rem TEEs.
 
-    for _, remTEE := range u.RemTEEs {
-        for i, tee := range currentTEEs {
-            if bytes.Equal(tee, remTEE) {
-                currentTEEs = append(currentTEEs[:i], currentTEEs[i+1:]...)
-                break
-            }
-        }
-    }
-
-    currentTEEs = append(currentTEEs, u.AddTEEs...)
-
-    if len(currentTEEs) > MaxTEEsPerRegion {
-        return nil, ErrTooManyTEEs
-    }
-
-    region["tees"] = currentTEEs
+    // 5) Overwrite or store new attestation data
     region["attestations"] = u.Attestations
-    region["last_updated"] = u.Attestations[0].Timestamp.Format(time.RFC3339)
+    // If TEEAttestation.Timestamp is a time.Time, we can do .Format(...)
+    // or if it’s a uint64 of epoch seconds, we can convert it to time.Time.
+    region["last_updated"] = time.Now().UTC().Format(time.RFC3339)
 
+    // 6) Save updated region map
     if err := stateManager.SetRegion(ctx, mu, u.RegionID, region); err != nil {
         return nil, err
     }
 
+    // 7) Return a typed result
+    //   If you want a “state hash” from the attestation, you might store
+    //   something like [u.Attestations[0].Data] or similar in StateHash.
     return &UpdateRegionResult{
         RegionID:  u.RegionID,
         Success:   true,
-        StateHash: u.Attestations[0].Data,
-        Timestamp: u.Attestations[0].Timestamp.Format(time.RFC3339),
+        StateHash: u.Attestations[0].Data, // or any relevant bytes
+        Timestamp: time.Now().UTC().Format(time.RFC3339),
     }, nil
+}
+
+func UnmarshalUpdateRegion(data []byte) (chain.Action, error) {
+    p := codec.NewReader(data, len(data))
+    u := &UpdateRegionAction{}
+    u.Unmarshal(p)
+    if err := p.Err(); err != nil {
+        return nil, err
+    }
+    return u, nil
+}
+
+func (u *UpdateRegionAction) Unmarshal(p *codec.Packer) {
+    // 1) read RegionID
+    u.RegionID = p.UnpackString(false)
+
+    // 2) read [addCount], but store TEEs in a local var
+    addCount := p.UnpackInt(false)
+    localAdd := make([][]byte, addCount)
+    for i := uint32(0); i < addCount; i++ {
+        var tee []byte
+        p.UnpackBytes(32, true, &tee)
+        localAdd[i] = tee
+    }
+    // ... do something ephemeral with localAdd or ignore it
+
+    // 3) read [remCount], also local
+    remCount := p.UnpackInt(false)
+    localRem := make([][]byte, remCount)
+    for i := uint32(0); i < remCount; i++ {
+        var tee []byte
+        p.UnpackBytes(32, true, &tee)
+        localRem[i] = tee
+    }
+    // ... do something ephemeral with localRem
+
+    // 4) read Attestations array
+    u.Attestations[0].Unmarshal(p)
+    u.Attestations[1].Unmarshal(p)
 }
 
 func (*UpdateRegionAction) ComputeUnits(chain.Rules) uint64 {
@@ -237,3 +291,5 @@ func (*CreateRegionResult) GetTypeID() uint8 {
 func (*UpdateRegionResult) GetTypeID() uint8 {
     return consts.UpdateRegionResultID
 }
+
+

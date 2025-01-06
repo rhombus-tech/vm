@@ -2,7 +2,7 @@ package vm
 
 import (
     "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/coordination"
+    "github.com/rhombus-tech/vm/coordination"
 )
 
 // StateManager extends the chain.StateManager interface to add coordination capabilities

@@ -141,35 +141,6 @@ func UpdateTaskState(
    return SetCoordinationState(ctx, mu, state)
 }
 
-// [balancePrefix] + [address]
-func BalanceKey(addr codec.Address) (k []byte) {
-   k = make([]byte, 1+codec.AddressLen+consts.Uint16Len)
-   k[0] = balancePrefix
-   copy(k[1:], addr[:])
-   binary.BigEndian.PutUint16(k[1+codec.AddressLen:], BalanceChunks)
-   return
-}
-
-// If locked is 0, then account does not exist
-func GetBalance(
-   ctx context.Context,
-   im state.Immutable,
-   addr codec.Address,
-) (uint64, error) {
-   _, bal, _, err := getBalance(ctx, im, addr)
-   return bal, err
-}
-
-func getBalance(
-   ctx context.Context,
-   im state.Immutable,
-   addr codec.Address,
-) ([]byte, uint64, bool, error) {
-   k := BalanceKey(addr)
-   bal, exists, err := innerGetBalance(im.GetValue(ctx, k))
-   return k, bal, exists, err
-}
-
 // Used to serve RPC queries
 func GetBalanceFromState(
    ctx context.Context,
@@ -209,69 +180,45 @@ func SetBalance(
    return setBalance(ctx, mu, k, balance)
 }
 
-func setBalance(
-   ctx context.Context,
-   mu state.Mutable,
-   key []byte,
-   balance uint64,
-) error {
-   return mu.Insert(ctx, key, binary.BigEndian.AppendUint64(nil, balance))
-}
 
-func AddBalance(
-   ctx context.Context,
-   mu state.Mutable,
-   addr codec.Address,
-   amount uint64,
-   create bool,
-) (uint64, error) {
-   key, bal, exists, err := getBalance(ctx, mu, addr)
-   if err != nil {
-       return 0, err
-   }
-   if !exists && !create {
-       return 0, nil
-   }
-   nbal, err := smath.Add(bal, amount)
-   if err != nil {
-       return 0, fmt.Errorf(
-           "%w: could not add balance (bal=%d, addr=%v, amount=%d)",
-           ErrInvalidBalance,
-           bal,
-           addr,
-           amount,
-       )
-   }
-   return nbal, setBalance(ctx, mu, key, nbal)
-}
-
+// SubBalance example
 func SubBalance(
-   ctx context.Context,
-   mu state.Mutable,
-   addr codec.Address,
-   amount uint64,
+    ctx context.Context,
+    st state.Mutable,
+    addr codec.Address,
+    amount uint64,
 ) (uint64, error) {
-   key, bal, ok, err := getBalance(ctx, mu, addr)
-   if !ok {
-       return 0, ErrInvalidAddress
-   }
-   if err != nil {
-       return 0, err
-   }
-   nbal, err := smath.Sub(bal, amount)
-   if err != nil {
-       return 0, fmt.Errorf(
-           "%w: could not subtract balance (bal=%d, addr=%v, amount=%d)",
-           ErrInvalidBalance,
-           bal,
-           addr,
-           amount,
-       )
-   }
-   if nbal == 0 {
-       return 0, mu.Remove(ctx, key)
-   }
-   return nbal, setBalance(ctx, mu, key, nbal)
+    oldBal, err := GetBalance(ctx, st, addr)
+    if err != nil {
+        return 0, err
+    }
+    if oldBal < amount {
+        return 0, ErrInsufficientBalance
+    }
+    newBal := oldBal - amount
+    if newBal == 0 {
+        // remove key if zero
+        return 0, st.Remove(ctx, BalanceKey(addr))
+    }
+    err = SetBalance(ctx, st, addr, newBal)
+    return newBal, err
+}
+
+// GetBalance example
+func GetBalance(
+    ctx context.Context,
+    r state.KeyValueReader,
+    addr codec.Address,
+) (uint64, error) {
+    val, err := r.GetValue(ctx, BalanceKey(addr))
+    if err != nil {
+        // treat “not found” as zero
+        return 0, nil
+    }
+    if len(val) < 8 {
+        return 0, fmt.Errorf("corrupt balance data")
+    }
+    return binary.BigEndian.Uint64(val), nil
 }
 
 func HeightKey() (k []byte) {
@@ -479,43 +426,6 @@ type ObjectState struct {
     Events      []string  `json:"events"`
     LastUpdated time.Time `json:"last_updated"`
     Status      string    `json:"status"`
-}
-
-// Update GetObject to return ObjectState
-func GetObject(
-    ctx context.Context,
-    im state.Immutable,
-    id string,
-) (*ObjectState, error) {
-    k := ObjectKey(id)
-    v, err := im.GetValue(ctx, k)
-    if errors.Is(err, database.ErrNotFound) {
-        return nil, nil
-    }
-    if err != nil {
-        return nil, err
-    }
-
-    var obj ObjectState
-    if err := codec.Unmarshal(v, &obj); err != nil {
-        return nil, err
-    }
-    return &obj, nil
-}
-
-// Update SetObject to take ObjectState
-func SetObject(
-    ctx context.Context,
-    mu state.Mutable,
-    id string,
-    obj *ObjectState,
-) error {
-    k := ObjectKey(id)
-    v, err := codec.Marshal(obj)
-    if err != nil {
-        return err
-    }
-    return mu.Insert(ctx, k, v)
 }
 
 func RegionKey(id string) []byte {

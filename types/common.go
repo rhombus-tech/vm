@@ -3,6 +3,8 @@ package types
 
 import (
     "time"
+
+    "github.com/ava-labs/hypersdk/codec"
 )
 
 type TEEAddress []byte
@@ -31,6 +33,24 @@ type TEEAttestation struct {
     Data        []byte    `serialize:"true" json:"data"`
     Signature   []byte    `serialize:"true" json:"signature"`
     RegionProof []byte    `serialize:"true" json:"region_proof"`
+}
+
+func (t *TEEAttestation) Unmarshal(p *codec.Packer) {
+    // EnclaveID
+    p.UnpackBytes(0, false, &t.EnclaveID)
+    // Measurement
+    p.UnpackBytes(0, false, &t.Measurement)
+
+    // Read the Unix seconds as a uint64 and convert to time.Time
+    epochSec := p.UnpackUint64(false)
+    t.Timestamp = time.Unix(int64(epochSec), 0).UTC()
+
+    // Data
+    p.UnpackBytes(0, false, &t.Data)
+    // Signature
+    p.UnpackBytes(0, false, &t.Signature)
+    // RegionProof
+    p.UnpackBytes(0, false, &t.RegionProof)
 }
 
 // When using timestamps in the event creation:

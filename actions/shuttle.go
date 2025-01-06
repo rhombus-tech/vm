@@ -191,6 +191,37 @@ func (c *CreateObjectAction) ValidRange(chain.Rules) (int64, int64) {
     return -1, -1
 }
 
+func UnmarshalCreateObject(data []byte) (chain.Action, error) {
+    p := codec.NewReader(data, len(data))
+    c := &CreateObjectAction{}
+    c.Unmarshal(p)
+    if err := p.Err(); err != nil {
+        return nil, err
+    }
+    return c, nil
+}
+
+func (c *CreateObjectAction) Unmarshal(p *codec.Packer) error {
+    c.ID = p.UnpackString(false)
+    // code bytes
+    p.UnpackBytes(0 /*limit=0 means unbounded*/, false /*required?*/, &c.Code)
+    // storage bytes
+    p.UnpackBytes(0, false, &c.Storage)
+    // region
+    c.RegionID = p.UnpackString(false)
+
+    return p.Err()
+}
+
+func ParseCreateObject(p *codec.Packer) (chain.Action, error) {
+    c := &CreateObjectAction{}
+    // c.Unmarshal returns an error (not two values)
+    if err := c.Unmarshal(p); err != nil {
+        return nil, err
+    }
+    return c, nil
+}
+
 // StateKeys implementation for SendEventAction
 func (s *SendEventAction) StateKeys(actor codec.Address) state.Keys {
     return state.Keys{
@@ -298,6 +329,34 @@ func (s *SendEventAction) ValidRange(chain.Rules) (int64, int64) {
     return -1, -1
 }
 
+func ParseSendEvent(p *codec.Packer) (chain.Action, error) {
+    s := &SendEventAction{}
+    if err := s.Unmarshal(p); err != nil {
+        return nil, err
+    }
+    return s, nil
+}
+
+// UnmarshalSendEvent is the function your parser calls to rebuild from bytes.
+func UnmarshalSendEvent(data []byte) (chain.Action, error) {
+    p := codec.NewReader(data, len(data))
+    s := &SendEventAction{}
+    s.Unmarshal(p)
+    if err := p.Err(); err != nil {
+        return nil, err
+    }
+    return s, nil
+}
+
+func (s *SendEventAction) Unmarshal(p *codec.Packer) error {
+    s.IDTo = p.UnpackString(false)
+    s.FunctionCall = p.UnpackString(false)
+    p.UnpackBytes(0, false, &s.Parameters)
+
+    s.RegionID = p.UnpackString(false)
+    return p.Err()
+}
+
 // StateKeys implementation for SetInputObjectAction
 func (s *SetInputObjectAction) StateKeys(actor codec.Address) state.Keys {
     return state.Keys{
@@ -346,6 +405,30 @@ func (*SetInputObjectAction) ComputeUnits(chain.Rules) uint64 {
 
 func (*SetInputObjectAction) ValidRange(chain.Rules) (int64, int64) {
     return -1, -1
+}
+
+func UnmarshalSetInputObject(data []byte) (chain.Action, error) {
+    p := codec.NewReader(data, len(data))
+    a := &SetInputObjectAction{}
+    a.Unmarshal(p)
+    if err := p.Err(); err != nil {
+        return nil, err
+    }
+    return a, nil
+}
+
+// Unmarshal
+func (s *SetInputObjectAction) Unmarshal(p *codec.Packer) error {
+    s.ID = p.UnpackString(false)
+    return p.Err()
+}
+
+func ParseSetInputObject(p *codec.Packer) (chain.Action, error) {
+    s := &SetInputObjectAction{}
+    if err := s.Unmarshal(p); err != nil {
+        return nil, err
+    }
+    return s, nil
 }
 
 // Helper functions
@@ -473,3 +556,4 @@ func validateTimestamp(timestamp string) error {
     
     return nil
 }
+

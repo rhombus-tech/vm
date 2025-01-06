@@ -47,6 +47,3 @@ const (
     TEEPlatformSGX uint8 = iota
     TEEPlatformSEV
 )
-
-// Maximum allowed drift for Roughtime stamps
-const MaxTimeDrift = 5 * 60 // 5 minutes in seconds

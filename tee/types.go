@@ -3,11 +3,16 @@ package tee
 
 import (
     "time"
+    "fmt"
 
     pb "github.com/rhombus-tech/vm/tee"
     "github.com/rhombus-tech/vm/actions"
 )
 
+const (
+    TEETypeSGX = "SGX"
+    TEETypeSEV = "SEV"
+)
 
 // ShuttleEvent represents an event with proper time handling
 type ShuttleEvent struct {

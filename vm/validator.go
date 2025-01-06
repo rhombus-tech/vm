@@ -6,6 +6,11 @@ import (
     "errors"
 )
 
+const (
+    // TEE Types
+    TEETypeSGX uint8 = 1
+    TEETypeSEV uint8 = 2
+)
 var (
     ErrInvalidFormat     = errors.New("invalid code format")
     ErrUnsupportedFormat = errors.New("unsupported code format")
