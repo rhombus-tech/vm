@@ -1,0 +1,39 @@
+// core/interfaces.go
+package core
+
+import (
+    "context"
+    "github.com/ava-labs/hypersdk/chain"
+    "github.com/ava-labs/hypersdk/state"
+)
+
+// StateManager extends chain.StateManager
+type StateManager interface {
+    chain.StateManager
+    
+    // Object operations
+    GetObject(ctx context.Context, mu state.Mutable, id string) (*ObjectState, error)
+    SetObject(ctx context.Context, mu state.Mutable, id string, obj *ObjectState) error
+    ObjectExists(ctx context.Context, mu state.Mutable, id string) (bool, error)
+    
+    // Event operations
+    SetEvent(ctx context.Context, mu state.Mutable, id string, event *Event) error
+    
+    // Region operations
+    GetRegion(ctx context.Context, mu state.Mutable, id string) (map[string]interface{}, error)
+    SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error
+    RegionExists(ctx context.Context, mu state.Mutable, id string) (bool, error)
+    
+    // Input object operations
+    SetInputObject(ctx context.Context, mu state.Mutable, id string) error
+    
+    // Coordination
+    GetCoordinator() Coordinator
+}
+
+// Coordinator interface
+type Coordinator interface {
+    SubmitTask(ctx context.Context, task *Task) error
+    SendMessage(msg *Message) error
+    GetWorkerIDs() []WorkerID
+}
