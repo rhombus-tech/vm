@@ -40,6 +40,7 @@ const (
     MessageTypeData
     MessageTypeAttestation
     MessageTypeComplete
+    MessageTypeVerification
 )
 
 // WorkerState tracks worker status

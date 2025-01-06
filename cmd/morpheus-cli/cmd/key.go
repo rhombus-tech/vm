@@ -6,7 +6,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/ava-labs/hypersdk-starter-kit/auth"
+	"github.com/rhombus-tech/vm/auth"
 	"github.com/ava-labs/hypersdk/utils"
 )
 

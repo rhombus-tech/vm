@@ -3,6 +3,8 @@ package core
 
 import (
     "time"
+	"bytes"
+	"errors"
     "github.com/ava-labs/hypersdk/codec"
 )
 

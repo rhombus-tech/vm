@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ava-labs/hypersdk-starter-kit/consts"
-	"github.com/ava-labs/hypersdk-starter-kit/storage"
+	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/storage"
 	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"

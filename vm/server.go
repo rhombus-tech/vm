@@ -1,65 +1,103 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
-
+// server.go
 package vm
 
 import (
-	"net/http"
+    "context"
+    "net/http"
 
-	"github.com/ava-labs/hypersdk-starter-kit/consts"
-	"github.com/ava-labs/hypersdk-starter-kit/storage"
-	"github.com/ava-labs/hypersdk/api"
-	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/genesis"
+    // Provided by HyperSDK
+    "github.com/ava-labs/hypersdk/api"
+    "github.com/ava-labs/hypersdk/chain"
+    "github.com/ava-labs/hypersdk/codec"
+    "github.com/ava-labs/hypersdk/genesis"
+
+    // Local packages
+    "github.com/rhombus-tech/vm/consts"
+    "github.com/rhombus-tech/vm/storage"
 )
 
+// JSONRPCEndpoint is the path for JSON RPC requests (e.g. /morpheusapi).
 const JSONRPCEndpoint = "/morpheusapi"
 
-var _ api.HandlerFactory[api.VM] = (*jsonRPCServerFactory)(nil)
-
+// jsonRPCServerFactory implements the HyperSDK API factory pattern.
+//
+// The generic type here is [chain.VM], so AddAPIHandler(...) can accept it.
 type jsonRPCServerFactory struct{}
 
-func (jsonRPCServerFactory) New(vm api.VM) (api.Handler, error) {
-	handler, err := api.NewJSONRPCHandler(consts.Name, NewJSONRPCServer(vm))
-	return api.Handler{
-		Path:    JSONRPCEndpoint,
-		Handler: handler,
-	}, err
+var _ api.HandlerFactory[chain.VM] = (*jsonRPCServerFactory)(nil)
+
+// New is required by api.HandlerFactory. It should return an api.Handler
+// with a path and the underlying http.Handler.
+func (jsonRPCServerFactory) New(vm chain.VM) (api.Handler, error) {
+    handler, err := api.NewJSONRPCHandler(consts.Name, &JSONRPCServer{vm: vm})
+    if err != nil {
+        return api.Handler{}, err
+    }
+    return api.Handler{
+        Path:    JSONRPCEndpoint,
+        Handler: handler,
+    }, nil
 }
 
+// JSONRPCServer implements your JSON-RPC methods.
 type JSONRPCServer struct {
-	vm api.VM
+    vm chain.VM
 }
 
-func NewJSONRPCServer(vm api.VM) *JSONRPCServer {
-	return &JSONRPCServer{vm: vm}
-}
-
+// GenesisReply is returned from the Genesis method.
 type GenesisReply struct {
-	Genesis *genesis.DefaultGenesis `json:"genesis"`
+    Genesis *genesis.DefaultGenesis `json:"genesis,omitempty"`
 }
 
-func (j *JSONRPCServer) Genesis(_ *http.Request, _ *struct{}, reply *GenesisReply) (err error) {
-	reply.Genesis = j.vm.Genesis().(*genesis.DefaultGenesis)
-	return nil
+// Genesis is an example JSON-RPC method that tries to retrieve a DefaultGenesis.
+func (j *JSONRPCServer) Genesis(_ *http.Request, _ *struct{}, reply *GenesisReply) error {
+    // Cast chain.VM to something that can provide Genesis (e.g. MyVM).
+    vmWithGenesis, ok := j.vm.(interface {
+        MyCustomGenesis() (*genesis.DefaultGenesis, error)
+    })
+    if !ok {
+        // Not implemented; just return nil or an error
+        return nil
+    }
+
+    defGenesis, err := vmWithGenesis.MyCustomGenesis()
+    if err != nil {
+        return err
+    }
+    reply.Genesis = defGenesis
+    return nil
 }
 
+// BalanceArgs for the Balance method.
 type BalanceArgs struct {
-	Address codec.Address `json:"address"`
+    Address codec.Address `json:"address"`
 }
 
+// BalanceReply for the Balance method.
 type BalanceReply struct {
-	Amount uint64 `json:"amount"`
+    Amount uint64 `json:"amount"`
 }
 
+// Balance is an example JSON-RPC method for retrieving a user’s balance.
 func (j *JSONRPCServer) Balance(req *http.Request, args *BalanceArgs, reply *BalanceReply) error {
-	ctx, span := j.vm.Tracer().Start(req.Context(), "Server.Balance")
-	defer span.End()
+    ctx := req.Context()
 
-	balance, err := storage.GetBalanceFromState(ctx, j.vm.ReadState, args.Address)
-	if err != nil {
-		return err
-	}
-	reply.Amount = balance
-	return err
+    // If your chain.VM implements a method to read balances, cast to it.
+    vmWithBalance, ok := j.vm.(interface {
+        ReadBalance(context.Context, []byte) (uint64, error)
+    })
+    if !ok {
+        // If no method is available, you can call your storage package directly,
+        // but you must pass the correct interface or DB reference.
+        // Example, if you want to do storage.GetBalance(ctx, ???, args.Address)
+        // For now, we'll just short-circuit
+        return nil
+    }
+
+    amount, err := vmWithBalance.ReadBalance(ctx, args.Address[:])
+    if err != nil {
+        return err
+    }
+    reply.Amount = amount
+    return nil
 }

@@ -1,5 +1,4 @@
-// File: vm/tee/client.go
-
+// File: tee/client.go
 package tee
 
 import (
@@ -9,8 +8,8 @@ import (
 
     "google.golang.org/grpc"
 
-    // Import the generated Go package from your .proto
-    pb "github.com/rhombus-tech/vm/tee/proto"
+    // Make sure your generated code is at this path:
+    pb "github.com/rhombus-tech/vm/tee/proto/pb"
 
     // Example references:
     "github.com/rhombus-tech/vm/actions"
@@ -24,7 +23,7 @@ type Client struct {
     sgxConn   *grpc.ClientConn
     sevConn   *grpc.ClientConn
 
-    verifier  *verifier.StateVerifier
+    verifier *verifier.StateVerifier // must have exported method(s)
 }
 
 // NewClient must return both *Client and error
@@ -73,6 +72,7 @@ func (c *Client) Close() error {
 
 // ExecuteAction calls the TEE gRPC method 'Execute' on both SGX and SEV
 func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAction) error {
+    // Build the request proto
     req := &pb.ExecutionRequest{
         IdTo:         action.IDTo,
         FunctionCall: action.FunctionCall,
@@ -92,13 +92,11 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
         return fmt.Errorf("SEV Execute failed: %w", err)
     }
 
-    // If your ExecutionResult doesn't have a 'timestamp' field, remove these lines:
-    // e.g. only do this if you actually have "string timestamp = 1;" in ExecutionResult
+    // If we only need sgxResult.Timestamp, underscore it so the compiler won't complain:
     sgxTime := sgxResult.Timestamp
-    sevTime := sevResult.Timestamp
+    _ = sgxTime
 
-    // If your 'verifier' has an exported method "VerifyAttestationPair":
-    //  rename your unexported method to a capital letter, or remove the calls
+    // Verify both attestation sets if your verifier has an exported method
     if err := c.verifier.VerifyAttestationPair(ctx, sgxResult.Attestations, nil); err != nil {
         return fmt.Errorf("SGX attestation verify failed: %w", err)
     }
@@ -106,12 +104,12 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
         return fmt.Errorf("SEV attestation verify failed: %w", err)
     }
 
-    // Compare results
+    // Compare results to ensure they match
     if err := c.compareResults(sgxResult, sevResult); err != nil {
         return err
     }
 
-    // Possibly build a separate 'Event' if you actually have that in your proto:
+    // Possibly build a separate 'Event'
     sgxEvent := &pb.Event{
         Id:           action.IDTo,
         FunctionCall: action.FunctionCall,
@@ -120,7 +118,7 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
         Timestamp:    sgxTime,
         Attestations: sgxResult.Attestations,
     }
-    // Or do something with sgxEvent...
+    // Do something with sgxEvent if needed...
 
     // Return success
     return nil

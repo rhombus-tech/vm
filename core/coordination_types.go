@@ -1,8 +1,7 @@
 // core/coordination_types.go
 package core
 
-import (
-    "errors" 
+import ( 
     "time"
 )
 

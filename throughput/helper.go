@@ -4,8 +4,8 @@ package throughput
 
 import (
    "context"
-   "github.com/ava-labs/hypersdk-starter-kit/actions"
-   "github.com/ava-labs/hypersdk-starter-kit/vm"
+   "github.com/rhombus-tech/vm/actions"
+   "github.com/rhombus-tech/vm"
    "github.com/ava-labs/hypersdk/api/ws"
    "github.com/ava-labs/hypersdk/auth"
    "github.com/ava-labs/hypersdk/chain"
@@ -13,7 +13,7 @@ import (
    "github.com/ava-labs/hypersdk/pubsub"
    "github.com/ava-labs/hypersdk/throughput"
    "github.com/cloudflare/roughtime"
-   mauth "github.com/ava-labs/hypersdk-starter-kit/auth"
+   mauth "github.com/rhombus-tech/vm/auth"
 )
 
 type SpamHelper struct {

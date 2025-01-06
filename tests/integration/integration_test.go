@@ -9,13 +9,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/ava-labs/hypersdk-starter-kit/vm"
+	"github.com/rhombus-tech/vm"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/crypto/ed25519"
 	"github.com/ava-labs/hypersdk/tests/integration"
 
-	lconsts "github.com/ava-labs/hypersdk-starter-kit/consts"
-	morpheusWorkload "github.com/ava-labs/hypersdk-starter-kit/tests/workload"
+	lconsts "github.com/rhombus-tech/vm/consts"
+	morpheusWorkload "github.com/rhombus-tech/vm/tests/workload"
 	ginkgo "github.com/onsi/ginkgo/v2"
 )
 

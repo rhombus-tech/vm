@@ -7,7 +7,7 @@ package main
 import (
 	"os"
 
-	"github.com/ava-labs/hypersdk-starter-kit/cmd/morpheus-cli/cmd"
+	"github.com/rhombus-tech/vm/cmd/morpheus-cli/cmd"
 	"github.com/ava-labs/hypersdk/utils"
 )
 
