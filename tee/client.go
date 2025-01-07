@@ -8,25 +8,34 @@ import (
 
     "google.golang.org/grpc"
 
-    // Make sure your generated code is at this path:
     pb "github.com/rhombus-tech/vm/tee/proto/pb"
-
-    // Example references:
     "github.com/rhombus-tech/vm/actions"
     "github.com/rhombus-tech/vm/verifier"
 )
 
+// TEEPair holds SGX and SEV clients for a region
+type TEEPair struct {
+    sgxClient pb.TeeExecutionClient
+    sevClient pb.TeeExecutionClient
+    sgxConn   *grpc.ClientConn
+    sevConn   *grpc.ClientConn
+}
+
 // Client holds TEE connections and a verifier
 type Client struct {
+    // Default (non-regional) TEE clients
     sgxClient pb.TeeExecutionClient
     sevClient pb.TeeExecutionClient
     sgxConn   *grpc.ClientConn
     sevConn   *grpc.ClientConn
 
-    verifier *verifier.StateVerifier // must have exported method(s)
+    // Regional TEE clients
+    regionTEEs map[string]*TEEPair
+
+    verifier *verifier.StateVerifier
 }
 
-// NewClient must return both *Client and error
+// NewClient creates a new client with default TEE connections
 func NewClient(
     sgxEndpoint, sevEndpoint string,
     v *verifier.StateVerifier,
@@ -46,31 +55,75 @@ func NewClient(
     }
 
     client := &Client{
-        sgxClient: pb.NewTeeExecutionClient(sgxConn),
-        sevClient: pb.NewTeeExecutionClient(sevConn),
-        sgxConn:   sgxConn,
-        sevConn:   sevConn,
-        verifier:  v,
+        sgxClient:  pb.NewTeeExecutionClient(sgxConn),
+        sevClient:  pb.NewTeeExecutionClient(sevConn),
+        sgxConn:    sgxConn,
+        sevConn:    sevConn,
+        verifier:   v,
+        regionTEEs: make(map[string]*TEEPair),
     }
     return client, nil
 }
 
-// Close closes both SGX and SEV connections.
+// AddRegion adds a new region's TEE endpoints
+func (c *Client) AddRegion(
+    regionID string,
+    sgxEndpoint string,
+    sevEndpoint string,
+) error {
+    // Connect to the SGX TEE
+    sgxConn, err := grpc.Dial(sgxEndpoint, grpc.WithInsecure())
+    if err != nil {
+        return fmt.Errorf("failed to dial SGX for region %s: %w", regionID, err)
+    }
+
+    // Connect to the SEV TEE
+    sevConn, err := grpc.Dial(sevEndpoint, grpc.WithInsecure())
+    if err != nil {
+        // If SEV fails, close SGX too
+        _ = sgxConn.Close()
+        return fmt.Errorf("failed to dial SEV for region %s: %w", regionID, err)
+    }
+
+    c.regionTEEs[regionID] = &TEEPair{
+        sgxClient: pb.NewTeeExecutionClient(sgxConn),
+        sevClient: pb.NewTeeExecutionClient(sevConn),
+        sgxConn:   sgxConn,
+        sevConn:   sevConn,
+    }
+
+    return nil
+}
+
+// Close closes all TEE connections
 func (c *Client) Close() error {
     var errs []error
+    
+    // Close default connections
     if err := c.sgxConn.Close(); err != nil {
-        errs = append(errs, fmt.Errorf("closing SGX: %w", err))
+        errs = append(errs, fmt.Errorf("closing default SGX: %w", err))
     }
     if err := c.sevConn.Close(); err != nil {
-        errs = append(errs, fmt.Errorf("closing SEV: %w", err))
+        errs = append(errs, fmt.Errorf("closing default SEV: %w", err))
     }
+
+    // Close regional connections
+    for regionID, pair := range c.regionTEEs {
+        if err := pair.sgxConn.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("closing SGX for region %s: %w", regionID, err))
+        }
+        if err := pair.sevConn.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("closing SEV for region %s: %w", regionID, err))
+        }
+    }
+
     if len(errs) > 0 {
         return fmt.Errorf("TEE client close errors: %v", errs)
     }
     return nil
 }
 
-// ExecuteAction calls the TEE gRPC method 'Execute' on both SGX and SEV
+// ExecuteAction maintains original functionality while adding regional support
 func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAction) error {
     // Build the request proto
     req := &pb.ExecutionRequest{
@@ -80,16 +133,36 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
         RegionId:     action.RegionID,
     }
 
-    // Call SGX
-    sgxResult, err := c.sgxClient.Execute(ctx, req)
-    if err != nil {
-        return fmt.Errorf("SGX Execute failed: %w", err)
+    var sgxResult, sevResult *pb.ExecutionResult
+    var err error
+
+    // Check if this is a regional execution
+    if action.RegionID != "" {
+        if pair, ok := c.regionTEEs[action.RegionID]; ok {
+            // Execute in specific region
+            sgxResult, err = pair.sgxClient.Execute(ctx, req)
+            if err != nil {
+                return fmt.Errorf("regional SGX Execute failed: %w", err)
+            }
+
+            sevResult, err = pair.sevClient.Execute(ctx, req)
+            if err != nil {
+                return fmt.Errorf("regional SEV Execute failed: %w", err)
+            }
+        }
     }
 
-    // Call SEV
-    sevResult, err := c.sevClient.Execute(ctx, req)
-    if err != nil {
-        return fmt.Errorf("SEV Execute failed: %w", err)
+    // Fall back to default TEE clients if no region specified or not found
+    if sgxResult == nil {
+        sgxResult, err = c.sgxClient.Execute(ctx, req)
+        if err != nil {
+            return fmt.Errorf("SGX Execute failed: %w", err)
+        }
+
+        sevResult, err = c.sevClient.Execute(ctx, req)
+        if err != nil {
+            return fmt.Errorf("SEV Execute failed: %w", err)
+        }
     }
 
     // Convert attestations and verify
