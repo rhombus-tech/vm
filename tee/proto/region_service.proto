@@ -1,0 +1,23 @@
+// tee/proto/region_service.proto
+syntax = "proto3";
+
+package teeregion; 
+
+service RegionService {
+    // Create/update/delete regions
+    rpc CreateRegion(CreateRegionRequest) returns (CreateRegionResponse);
+    rpc UpdateRegion(UpdateRegionRequest) returns (UpdateRegionResponse);
+    rpc DeleteRegion(DeleteRegionRequest) returns (DeleteRegionResponse);
+    
+    // Region status/health
+    rpc GetRegionStatus(GetRegionStatusRequest) returns (GetRegionStatusResponse);
+    rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse);
+}
+
+message Region {
+    string id = 1;
+    repeated bytes tee_ids = 2;
+    string status = 3;
+    string created_at = 4;
+    repeated RegionMetric metrics = 5;
+}
