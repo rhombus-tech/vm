@@ -2,8 +2,9 @@
 package core
 
 import (
-    "context"
-    "errors"
+	"context"
+	"errors"
+	"time"
 )
 
 type PlatformType uint8
@@ -33,8 +34,9 @@ func NewPlatform(pType PlatformType, config *Config) (Platform, error) {
 
 // ExecutionResult represents the result of code execution in a TEE
 type ExecutionResult struct {
-    Output       []byte            `json:"output"`
-    StateUpdates map[string][]byte `json:"state_updates"`
-    Events       []Event           `json:"events"`
-    Attestation  TEEAttestation   `json:"attestation"`
+    Output       []byte
+    StateHash    []byte
+    RegionID     string             // Add region tracking
+    Attestations [2]TEEAttestation  // Both SGX and SEV attestations
+    Timestamp    time.Time
 }

@@ -23,6 +23,10 @@ type StateManager interface {
      GetRegion(ctx context.Context, mu state.Mutable, id string) (map[string]interface{}, error)
      SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error
      RegionExists(ctx context.Context, mu state.Mutable, id string) (bool, error)
+
+     SaveRegion(ctx context.Context, region *Region) error
+     LoadRegion(ctx context.Context, id string) (*Region, error)
+     DeleteRegion(ctx context.Context, id string) error
  }
     
     // Input object operations

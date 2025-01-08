@@ -26,7 +26,86 @@ type Coordinator struct {
     mu         sync.RWMutex
     ctx        context.Context
     cancel     context.CancelFunc
+
+    teePairs    map[string][2]WorkerID  // Region -> TEE worker pair mapping
+    regionLock  sync.RWMutex
 }
+
+type Region struct {
+    ID         string     `json:"id"`
+    Workers    [2]WorkerID `json:"workers"`
+    CreatedAt  time.Time  `json:"created_at"`
+}
+
+type Attestation struct {
+    EnclaveID   []byte    
+    Measurement []byte    
+    Timestamp   time.Time 
+    Data        []byte    
+    Signature   []byte    
+    RegionProof []byte    
+}
+
+func (c *Coordinator) RegisterRegion(ctx context.Context, regionID string, teeWorkers [2]WorkerID) error {
+    c.regionLock.Lock()
+    defer c.regionLock.Unlock()
+
+    // Verify workers exist
+    for _, workerID := range teeWorkers {
+        if _, exists := c.workers[workerID]; !exists {
+            return fmt.Errorf("worker %s not found", workerID)
+        }
+    }
+
+    // Store TEE pair for region
+    c.teePairs[regionID] = teeWorkers
+
+    // Create region record in storage
+    region := &Region{
+        ID:        regionID,
+        Workers:   teeWorkers,
+        CreatedAt: time.Now().UTC(),
+    }
+
+    return c.storage.SaveRegion(ctx, region)
+}
+
+func (c *Coordinator) ValidateRegionalOperation(ctx context.Context, regionID string, attestations [2]Attestation) error {
+    c.regionLock.RLock()
+    defer c.regionLock.RUnlock()
+
+    // Get registered TEE pair for region
+    teePair, exists := c.teePairs[regionID]
+    if !exists {
+        return ErrRegionNotFound
+    }
+
+    // Verify attestations come from registered TEEs
+    for i, att := range attestations {
+        workerID := WorkerID(att.EnclaveID) // Convert enclave ID to worker ID
+        if workerID != teePair[i] {
+            return fmt.Errorf("unauthorized TEE for region: %s", workerID)
+        }
+    }
+
+    // Verify timestamps match
+    if !attestations[0].Timestamp.Equal(attestations[1].Timestamp) {
+        return fmt.Errorf("attestation timestamps do not match")
+    }
+
+    // Verify within time window
+    now := time.Now().UTC()
+    window := c.config.AttestationTimeout
+    for _, att := range attestations {
+        diff := now.Sub(att.Timestamp)
+        if diff > window || diff < -window {
+            return fmt.Errorf("attestation timestamp outside valid window")
+        }
+    }
+
+    return nil
+}
+
 
 func NewCoordinator(cfg *Config, db merkledb.MerkleDB) (*Coordinator, error) {
     ctx, cancel := context.WithCancel(context.Background())
@@ -47,6 +126,8 @@ func NewCoordinator(cfg *Config, db merkledb.MerkleDB) (*Coordinator, error) {
         changes:   merkledb.ViewChanges{},
         ctx:       ctx,
         cancel:    cancel,
+        teePairs:   make(map[string][2]WorkerID),
+        regionLock: sync.RWMutex{},
     }, nil
 }
 
@@ -126,7 +207,13 @@ func (c *Coordinator) processTasks() {
     for {
         select {
         case task := <-c.tasks:
-            if err := c.handleTask(c.ctx, task); err != nil {
+            var err error
+            if task.RegionID != "" {
+                err = c.handleRegionalTask(c.ctx, task, task.RegionID)
+            } else {
+                err = c.handleTask(c.ctx, task)
+            }
+            if err != nil {
                 // Log error but continue processing
                 continue
             }
@@ -162,14 +249,17 @@ func (c *Coordinator) handleTask(ctx context.Context, task *Task) error {
     // Establish channels between workers
     for i := 0; i < len(workers); i++ {
         for j := i + 1; j < len(workers); j++ {
-            channel := NewSecureChannel(workers[i].id, workers[j].id)
-            if err := channel.EstablishSecure(); err != nil {
-                continue
-            }
-
-            // Store channel state
-            if err := c.storage.SaveChannel(ctx, channel); err != nil {
-                continue
+            // Try to load existing channel first
+            channel, err := c.getChannel(ctx, workers[i].id, workers[j].id)
+            if err != nil || channel == nil {
+                channel = NewSecureChannel(workers[i].id, workers[j].id)
+                if err := channel.EstablishSecure(); err != nil {
+                    continue
+                }
+                // Save new channel state
+                if err := c.saveChannelState(ctx, channel); err != nil {
+                    continue
+                }
             }
 
             workers[i].channels[workers[j].id] = channel
@@ -187,6 +277,21 @@ func (c *Coordinator) handleTask(ctx context.Context, task *Task) error {
     }
 
     return nil
+}
+
+func (c *Coordinator) handleRegionalTask(ctx context.Context, task *Task, regionID string) error {
+    c.regionLock.RLock()
+    teePair, exists := c.teePairs[regionID]
+    c.regionLock.RUnlock()
+    
+    if !exists {
+        return ErrRegionNotFound
+    }
+
+    // Set task workers to region's TEE pair
+    task.WorkerIDs = []WorkerID{teePair[0], teePair[1]}
+
+    return c.handleTask(ctx, task)
 }
 
 func (c *Coordinator) restoreWorkers() error {

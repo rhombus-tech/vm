@@ -11,4 +11,5 @@ var (
     ErrInvalidState      = errors.New("invalid coordination state")
     ErrStorageError      = errors.New("storage error")
     ErrBatchError        = errors.New("batch operation error")
+    ErrRegionNotFound = errors.New("region not found")
 )

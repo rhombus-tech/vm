@@ -22,6 +22,7 @@ type Task struct {
     Data         []byte      // Task data
     Attestations [][]byte    // TEE attestations
     Timeout      time.Duration
+    RegionID     string
 }
 
 // Message represents communication between workers

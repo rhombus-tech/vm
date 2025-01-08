@@ -1,12 +1,13 @@
 package coordination
 
 import (
-    "context"
-    "encoding/json"
-    "sync"
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
 
-    "github.com/ava-labs/avalanchego/database"
-    "github.com/ava-labs/avalanchego/x/merkledb"
+	"github.com/ava-labs/avalanchego/database"
+	"github.com/ava-labs/avalanchego/x/merkledb"
 )
 
 // Storage handles persistent storage for coordination state
@@ -26,6 +27,10 @@ type Storage interface {
     LoadWorker(ctx context.Context, id WorkerID) (*Worker, error)
     DeleteWorker(ctx context.Context, id WorkerID) error
 
+    SaveRegion(ctx context.Context, region *Region) error
+    LoadRegion(ctx context.Context, id string) (*Region, error) 
+    DeleteRegion(ctx context.Context, id string) error
+
     // View management
     NewView(ctx context.Context, changes merkledb.ViewChanges) error
 
@@ -44,6 +49,35 @@ type storageCache struct {
     channels map[string]*SecureChannel
     workers  map[WorkerID]*Worker
     mu       sync.RWMutex
+}
+
+func (s *MerkleStorage) SaveRegion(ctx context.Context, region *Region) error {
+    data, err := json.Marshal(region)
+    if err != nil {
+        return err
+    }
+    
+    key := []byte(fmt.Sprintf("region:%s", region.ID))
+    return s.Put(ctx, key, data)
+}
+
+func (s *MerkleStorage) LoadRegion(ctx context.Context, id string) (*Region, error) {
+    key := []byte(fmt.Sprintf("region:%s", id))
+    data, err := s.Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    
+    var region Region
+    if err := json.Unmarshal(data, &region); err != nil {
+        return nil, err
+    }
+    return &region, nil
+}
+
+func (s *MerkleStorage) DeleteRegion(ctx context.Context, id string) error {
+    key := []byte(fmt.Sprintf("region:%s", id))
+    return s.Delete(ctx, key)
 }
 
 // NewStorage creates a new storage instance

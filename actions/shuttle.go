@@ -358,8 +358,8 @@ func (s *SetInputObjectAction) Execute(
         return nil, ErrInvalidID
     }
 
-    // Verify object exists
-    exists, err := stateManager.ObjectExists(ctx, mu, s.ID)
+    // Change 1: Add s.RegionID to ObjectExists call
+    exists, err := stateManager.ObjectExists(ctx, mu, s.ID, s.RegionID)
     if err != nil {
         return nil, err
     }
@@ -367,17 +367,22 @@ func (s *SetInputObjectAction) Execute(
         return nil, ErrObjectNotFound
     }
 
-    // Set input object using state manager
-    if err := stateManager.SetInputObject(ctx, mu, s.ID); err != nil {
+    // Change 2: Since SetInputObject is not in the interface, we can store it as a special object
+    obj := &core.ObjectState{
+        RegionID: s.RegionID,
+        Status: "input",
+        LastUpdated: time.Unix(timestamp, 0).UTC(),
+    }
+    if err := stateManager.SetObject(ctx, mu, "input:"+s.ID, obj); err != nil {
         return nil, err
     }
 
     return &SetInputObjectResult{
         ID:      s.ID,
         Success: true,
+        RegionID: s.RegionID,
     }, nil
 }
-
 func (*SetInputObjectAction) ComputeUnits(chain.Rules) uint64 {
     return 1
 }
@@ -480,10 +485,11 @@ func submitTask(
 }
 
 // State management helpers
-func getObjectState(ctx context.Context, mu state.Mutable, id string) (*core.ObjectState, error) {
+func getObjectState(ctx context.Context, mu state.Mutable, id string, regionID string) (*core.ObjectState, error) {
     stateManager := mu.(vm.StateManager)
     
-    obj, err := stateManager.GetObject(ctx, mu, id)
+    // Change 3: Add regionID parameter to GetObject call
+    obj, err := stateManager.GetObject(ctx, mu, id, regionID)
     if err != nil {
         return nil, err
     }
