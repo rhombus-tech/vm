@@ -13,7 +13,7 @@ import (
     "go.uber.org/zap"
 )
 
-// MorpheusVM implements the VM interface
+// ShuttleVM implements the VM interface
 type ShuttleVM struct {
     chainID      ids.ID
     stateManager state.Mutable
