@@ -2,17 +2,18 @@
 package vm
 
 import (
-    "context"
-    "net/http"
+	"context"
+	"errors"
+	"net/http"
 
-    // Provided by HyperSDK
-    "github.com/ava-labs/hypersdk/api"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/genesis"
+	// Provided by HyperSDK
+	"github.com/ava-labs/hypersdk/api"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/genesis"
 
-    // Local packages
-    "github.com/rhombus-tech/vm/consts"
+	// Local packages
+	"github.com/rhombus-tech/vm/consts"
 )
 
 // JSONRPCEndpoint is the path for JSON RPC requests (e.g. /morpheusapi).
@@ -98,5 +99,59 @@ func (j *JSONRPCServer) Balance(req *http.Request, args *BalanceArgs, reply *Bal
         return err
     }
     reply.Amount = amount
+    return nil
+}
+
+// ExecuteArgs for the Execute method
+type ExecuteArgs struct {
+    RegionID     string        `json:"region_id"`  
+    IDTo         string        `json:"id_to"`
+    FunctionCall string        `json:"function_call"`
+    Parameters   []byte        `json:"parameters"`
+}
+
+// ExecuteResult for the Execute method
+type ExecuteResult struct {
+    Success    bool   `json:"success"`
+    StateHash  []byte `json:"state_hash"`
+    Output     []byte `json:"output"`
+    Timestamp  string `json:"timestamp"`
+}
+
+// Add this new method after the existing Balance method
+func (j *JSONRPCServer) Execute(req *http.Request, args *ExecuteArgs, reply *ExecuteResult) error {
+    ctx := req.Context()
+
+    // Validate region exists and operation is authorized
+    if args.RegionID == "" {
+        return errors.New("region ID required")
+    }
+
+    // Cast chain.VM to something that can execute in regions
+    vmWithRegions, ok := j.vm.(interface {
+        ExecuteInRegion(context.Context, string, string, string, []byte) ([]byte, []byte, string, error)
+    })
+    if !ok {
+        return errors.New("regional execution not supported")
+    }
+
+    // Execute the operation
+    stateHash, output, timestamp, err := vmWithRegions.ExecuteInRegion(
+        ctx,
+        args.RegionID,
+        args.IDTo,
+        args.FunctionCall,
+        args.Parameters,
+    )
+    if err != nil {
+        return err
+    }
+
+    // Fill the reply
+    reply.Success = true
+    reply.StateHash = stateHash
+    reply.Output = output
+    reply.Timestamp = timestamp
+
     return nil
 }

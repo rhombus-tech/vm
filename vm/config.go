@@ -1,0 +1,65 @@
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
+
+package vm
+
+import "fmt"
+
+// Config represents the configuration for the VM, including regional settings
+type Config struct {
+    // Basic VM config fields can go here
+    NetworkID uint32 `json:"network_id"`
+    ChainID   string `json:"chain_id"`
+
+    // Regional configuration
+    Regions []RegionConfig `json:"regions"`
+}
+
+// RegionConfig represents the configuration for a single region
+type RegionConfig struct {
+    ID          string `json:"id"`
+    SGXEndpoint string `json:"sgx_endpoint"`
+    SEVEndpoint string `json:"sev_endpoint"`
+}
+
+// RegionClient handles TEE interactions for a specific region
+type RegionClient struct {
+    config RegionConfig
+    sgx    *TEEClient
+    sev    *TEEClient
+}
+
+// NewRegionClient creates a new client for regional TEE interactions
+func NewRegionClient(rc RegionConfig) (*RegionClient, error) {
+    sgx, err := NewTEEClient(rc.SGXEndpoint, TEETypeSGX)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create SGX client: %w", err)
+    }
+
+    sev, err := NewTEEClient(rc.SEVEndpoint, TEETypeSEV)
+    if err != nil {
+        sgx.Close() // Clean up SGX client if SEV fails
+        return nil, fmt.Errorf("failed to create SEV client: %w", err)
+    }
+
+    return &RegionClient{
+        config: rc,
+        sgx:    sgx,
+        sev:    sev,
+    }, nil
+}
+
+// Close cleans up region client resources
+func (rc *RegionClient) Close() error {
+    var errs []error
+    if err := rc.sgx.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("close SGX client: %w", err))
+    }
+    if err := rc.sev.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("close SEV client: %w", err))
+    }
+    if len(errs) > 0 {
+        return fmt.Errorf("close region client errors: %v", errs)
+    }
+    return nil
+}

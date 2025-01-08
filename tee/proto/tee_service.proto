@@ -6,6 +6,7 @@ option go_package = "github.com/rhombus-tech/vm/tee/proto/pb;pb";
 
 service TeeExecution {
     rpc Execute(ExecutionRequest) returns (ExecutionResult);
+    rpc GetRegions(GetRegionsRequest) returns (GetRegionsResponse);
 }
 
 message ExecutionRequest {
@@ -41,4 +42,16 @@ message TEEAttestation {
     bytes  data         = 4;
     bytes  signature    = 5;
     bytes  region_proof = 6;
+}
+
+message GetRegionsRequest {}
+
+message GetRegionsResponse {
+    repeated Region regions = 1;
+}
+
+message Region {
+    string id = 1;
+    string created_at = 2;
+    repeated string worker_ids = 3;
 }

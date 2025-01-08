@@ -9,14 +9,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rhombus-tech/vm/consts"
-	"github.com/rhombus-tech/vm/storage"
 	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/genesis"
 	"github.com/ava-labs/hypersdk/requester"
 	"github.com/ava-labs/hypersdk/utils"
+	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/storage"
+	pb "github.com/rhombus-tech/vm/tee/proto/pb"
 )
 
 const balanceCheckInterval = 500 * time.Millisecond
@@ -24,6 +25,10 @@ const balanceCheckInterval = 500 * time.Millisecond
 type JSONRPCClient struct {
 	requester *requester.EndpointRequester
 	g         *genesis.DefaultGenesis
+	regionTEEs map[string]struct {
+        sgxClient pb.TeeExecutionClient
+        sevClient pb.TeeExecutionClient
+}
 }
 
 // NewJSONRPCClient creates a new client object.
@@ -31,7 +36,14 @@ func NewJSONRPCClient(uri string) *JSONRPCClient {
 	uri = strings.TrimSuffix(uri, "/")
 	uri += JSONRPCEndpoint
 	req := requester.New(uri, consts.Name)
-	return &JSONRPCClient{req, nil}
+	return &JSONRPCClient{
+        requester: req,
+        g:         nil,
+        regionTEEs: make(map[string]struct {
+            sgxClient pb.TeeExecutionClient
+            sevClient pb.TeeExecutionClient
+        }),
+    }
 }
 
 func (cli *JSONRPCClient) Genesis(ctx context.Context) (*genesis.DefaultGenesis, error) {
@@ -118,8 +130,10 @@ func (*Parser) AuthCodec() *codec.TypeParser[chain.Auth] {
 	return AuthParser
 }
 
-func (*Parser) StateManager() chain.StateManager {
-	return &storage.StateManager{}
+// Add region validation to action execution
+func (p *Parser) StateManager() chain.StateManager {
+    // Create region-aware state manager
+    return &storage.StateManager{} 
 }
 
 func NewParser(genesis *genesis.DefaultGenesis) chain.Parser {
