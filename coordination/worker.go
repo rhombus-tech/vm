@@ -1,29 +1,29 @@
 package coordination
 
 import (
+    "encoding/json"
     "sync"
     "time"
 )
 
 type Worker struct {
-    id        WorkerID
-    enclaveID []byte
-    status    WorkerStatus
-    channels  map[WorkerID]*SecureChannel
+    ID        WorkerID              `json:"id"`
+    EnclaveID []byte               `json:"enclaveID"`
+    Status    WorkerStatus         `json:"status"`
+    Channels  map[WorkerID]*SecureChannel `json:"channels"`
     
-    msgCh     chan *Message
+    msgCh     chan *Message        // Unexported channels
     doneCh    chan struct{}
-    
     coord     *Coordinator
     mu        sync.RWMutex
 }
 
 func NewWorker(id WorkerID, enclaveID []byte, coord *Coordinator) *Worker {
     return &Worker{
-        id:        id,
-        enclaveID: enclaveID,
-        status:    WorkerStatusIdle,
-        channels:  make(map[WorkerID]*SecureChannel),
+        ID:        id,
+        EnclaveID: enclaveID,
+        Status:    WorkerStatusIdle,
+        Channels:  make(map[WorkerID]*SecureChannel),
         msgCh:     make(chan *Message, 100),
         doneCh:    make(chan struct{}),
         coord:     coord,
@@ -64,11 +64,10 @@ func (w *Worker) handleMessage(msg *Message) {
     w.mu.Lock()
     defer w.mu.Unlock()
 
-    channel, exists := w.channels[msg.FromWorker]
+    channel, exists := w.Channels[msg.FromWorker]
     if !exists {
-        // Create new secure channel
-        channel = NewSecureChannel(w.id, msg.FromWorker)
-        w.channels[msg.FromWorker] = channel
+        channel = NewSecureChannel(w.ID, msg.FromWorker)
+        w.Channels[msg.FromWorker] = channel
     }
 
     switch msg.Type {
@@ -97,4 +96,46 @@ func (w *Worker) handleAttestation(msg *Message, channel *SecureChannel) {
 
 func (w *Worker) handleComplete(msg *Message, channel *SecureChannel) {
     // Handle completion
+}
+
+// Add custom marshaling methods
+func (w *Worker) MarshalJSON() ([]byte, error) {
+    type Alias struct {
+        ID        WorkerID                        `json:"id"`
+        EnclaveID []byte                         `json:"enclaveID"`
+        Status    WorkerStatus                   `json:"status"`
+        Channels  map[WorkerID]*SecureChannel    `json:"channels"`
+    }
+
+    return json.Marshal(&Alias{
+        ID:        w.ID,
+        EnclaveID: w.EnclaveID,
+        Status:    w.Status,
+        Channels:  w.Channels,
+    })
+}
+
+func (w *Worker) UnmarshalJSON(data []byte) error {
+    type Alias struct {
+        ID        WorkerID                        `json:"id"`
+        EnclaveID []byte                         `json:"enclaveID"`
+        Status    WorkerStatus                   `json:"status"`
+        Channels  map[WorkerID]*SecureChannel    `json:"channels"`
+    }
+
+    aux := &Alias{}
+    if err := json.Unmarshal(data, aux); err != nil {
+        return err
+    }
+
+    w.ID = aux.ID
+    w.EnclaveID = aux.EnclaveID
+    w.Status = aux.Status
+    w.Channels = aux.Channels
+
+    // Reinitialize channels
+    w.msgCh = make(chan *Message, 100)
+    w.doneCh = make(chan struct{})
+
+    return nil
 }

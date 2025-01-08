@@ -3,26 +3,25 @@ package coordination
 
 import (
     "crypto/rand"
+    "encoding/json"
     "sync"
     "time"
 )
 
 type SecureChannel struct {
-    worker1   WorkerID
-    worker2   WorkerID
-    key       []byte
-    encrypted bool
-    
-    messages  chan []byte
+    Worker1   WorkerID    `json:"worker1"`
+    Worker2   WorkerID    `json:"worker2"`
+    Key       []byte      `json:"key"`
+    Encrypted bool        `json:"encrypted"`
+    messages  chan []byte // Unexported since it can't be marshaled
     done      chan struct{}
-    
     mu        sync.RWMutex
 }
 
 func NewSecureChannel(w1, w2 WorkerID) *SecureChannel {
     return &SecureChannel{
-        worker1:   w1,
-        worker2:   w2,
+        Worker1:   w1,
+        Worker2:   w2,
         messages:  make(chan []byte, 100),
         done:      make(chan struct{}),
     }
@@ -36,8 +35,8 @@ func (c *SecureChannel) EstablishSecure() error {
     }
     
     c.mu.Lock()
-    c.key = key
-    c.encrypted = true
+    c.Key = key        // Now using exported Key
+    c.Encrypted = true // Now using exported Encrypted
     c.mu.Unlock()
     
     return nil
@@ -45,12 +44,12 @@ func (c *SecureChannel) EstablishSecure() error {
 
 func (c *SecureChannel) Send(data []byte) error {
     c.mu.RLock()
-    encrypted := c.encrypted
+    encrypted := c.Encrypted // Now using exported Encrypted
     c.mu.RUnlock()
 
     if encrypted {
         var err error
-        data, err = encrypt(data, c.key)
+        data, err = encrypt(data, c.Key) // Now using exported Key
         if err != nil {
             return err
         }
@@ -68,12 +67,12 @@ func (c *SecureChannel) Receive() ([]byte, error) {
     select {
     case data := <-c.messages:
         c.mu.RLock()
-        encrypted := c.encrypted
+        encrypted := c.Encrypted // Now using exported Encrypted
         c.mu.RUnlock()
 
         if encrypted {
             var err error
-            data, err = decrypt(data, c.key)
+            data, err = decrypt(data, c.Key) // Now using exported Key
             if err != nil {
                 return nil, err
             }
@@ -86,6 +85,48 @@ func (c *SecureChannel) Receive() ([]byte, error) {
 
 func (c *SecureChannel) Close() error {
     close(c.done)
+    return nil
+}
+
+// Add custom marshaling methods
+func (c *SecureChannel) MarshalJSON() ([]byte, error) {
+    type Alias struct {
+        Worker1   WorkerID `json:"worker1"`
+        Worker2   WorkerID `json:"worker2"`
+        Key       []byte   `json:"key"`
+        Encrypted bool     `json:"encrypted"`
+    }
+    
+    return json.Marshal(&Alias{
+        Worker1:   c.Worker1,
+        Worker2:   c.Worker2,
+        Key:       c.Key,
+        Encrypted: c.Encrypted,
+    })
+}
+
+func (c *SecureChannel) UnmarshalJSON(data []byte) error {
+    type Alias struct {
+        Worker1   WorkerID `json:"worker1"`
+        Worker2   WorkerID `json:"worker2"`
+        Key       []byte   `json:"key"`
+        Encrypted bool     `json:"encrypted"`
+    }
+    
+    aux := &Alias{}
+    if err := json.Unmarshal(data, aux); err != nil {
+        return err
+    }
+    
+    c.Worker1 = aux.Worker1
+    c.Worker2 = aux.Worker2
+    c.Key = aux.Key
+    c.Encrypted = aux.Encrypted
+    
+    // Reinitialize channels
+    c.messages = make(chan []byte, 100)
+    c.done = make(chan struct{})
+    
     return nil
 }
 

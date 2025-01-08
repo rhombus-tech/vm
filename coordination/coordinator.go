@@ -246,26 +246,25 @@ func (c *Coordinator) handleTask(ctx context.Context, task *Task) error {
         return fmt.Errorf("failed to create view: %w", err)
     }
 
-    // Establish channels between workers
-    for i := 0; i < len(workers); i++ {
-        for j := i + 1; j < len(workers); j++ {
-            // Try to load existing channel first
-            channel, err := c.getChannel(ctx, workers[i].id, workers[j].id)
-            if err != nil || channel == nil {
-                channel = NewSecureChannel(workers[i].id, workers[j].id)
-                if err := channel.EstablishSecure(); err != nil {
-                    continue
-                }
-                // Save new channel state
-                if err := c.saveChannelState(ctx, channel); err != nil {
-                    continue
-                }
+   // Establish channels between workers
+for i := 0; i < len(workers); i++ {
+    for j := i + 1; j < len(workers); j++ {
+        // Try to load existing channel first
+        channel, err := c.getChannel(ctx, workers[i].ID, workers[j].ID) // Updated to .ID
+        if err != nil || channel == nil {
+            channel = NewSecureChannel(workers[i].ID, workers[j].ID)  // Updated to .ID
+            if err := channel.EstablishSecure(); err != nil {
+                continue
             }
-
-            workers[i].channels[workers[j].id] = channel
-            workers[j].channels[workers[i].id] = channel
+            // Save new channel state
+            if err := c.saveChannelState(ctx, channel); err != nil {
+                continue
+            }
         }
+        workers[i].Channels[workers[j].ID] = channel  // Updated to .Channels and .ID
+        workers[j].Channels[workers[i].ID] = channel  // Updated to .Channels and .ID
     }
+}
 
     // Distribute task data
     for _, worker := range workers {

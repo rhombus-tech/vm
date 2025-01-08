@@ -159,7 +159,7 @@ func (s *MerkleStorage) SaveChannel(ctx context.Context, channel *SecureChannel)
     s.cache.mu.Lock()
     defer s.cache.mu.Unlock()
 
-    key := makeChannelKey(channel.worker1, channel.worker2)
+    key := makeChannelKey(channel.Worker1, channel.Worker2)
     s.cache.channels[key] = channel
 
     // Marshal channel state
@@ -215,15 +215,16 @@ func (s *MerkleStorage) SaveWorker(ctx context.Context, worker *Worker) error {
     s.cache.mu.Lock()
     defer s.cache.mu.Unlock()
 
-    s.cache.workers[worker.id] = worker
+    s.cache.workers[worker.ID] = worker  // Updated to .ID
 
     // Marshal worker state
-    data, err := json.Marshal(worker)
+    data, err := json.Marshal(worker)  // This will now use Worker's custom MarshalJSON
     if err != nil {
-        return err
+        return fmt.Errorf("failed to marshal worker: %w", err)
     }
 
-    return s.Put(ctx, []byte(worker.id), data)
+    // Store using the worker's ID
+    return s.Put(ctx, []byte(worker.ID), data)  // Updated to .ID
 }
 
 // LoadWorker loads worker state
