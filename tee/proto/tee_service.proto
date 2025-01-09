@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package teeservice;
 
-option go_package = "github.com/rhombus-tech/vm/tee/proto/pb;pb";
+option go_package = "./pb;pb";  // Changed this line
 
 service TeeExecution {
     rpc Execute(ExecutionRequest) returns (ExecutionResult);
@@ -14,18 +14,34 @@ message ExecutionRequest {
     string function_call = 2;
     bytes  parameters    = 3;
     string region_id     = 4;
+    // Add optional fields for TEE-specific configuration
+    bool   detailed_proof = 5;  // Match Rust ExecutionParams
+    bytes  expected_hash  = 6;  // Match Rust ExecutionParams
 }
 
 message ExecutionResult {
-    // If you want a timestamp in the result:
-    string timestamp = 1; 
-
+    string timestamp = 1;
     repeated TEEAttestation attestations = 2;
     bytes state_hash = 3;
     bytes result     = 4;
+    // Add fields from Rust ExecutionStats
+    uint64 execution_time = 5;  // Time taken in milliseconds
+    uint64 memory_used    = 6;  // Memory used during execution
+    uint64 syscall_count  = 7;  // Number of system calls made
 }
 
-// If you really do want a separate Event message:
+message TEEAttestation {
+    bytes  enclave_id   = 1;
+    bytes  measurement  = 2;
+    string timestamp    = 3;
+    bytes  data         = 4;
+    bytes  signature    = 5;
+    bytes  region_proof = 6;
+    // Add field for platform-specific data
+    string enclave_type = 7;  // "SGX" or "SEV"
+}
+
+// Keep Event message as is
 message Event {
     string id            = 1;
     string function_call = 2;
@@ -33,15 +49,6 @@ message Event {
     string region_id     = 4;
     string timestamp     = 5;
     repeated TEEAttestation attestations = 6;
-}
-
-message TEEAttestation {
-    bytes  enclave_id   = 1;
-    bytes  measurement  = 2;
-    string timestamp    = 3; 
-    bytes  data         = 4;
-    bytes  signature    = 5;
-    bytes  region_proof = 6;
 }
 
 message GetRegionsRequest {}
@@ -54,4 +61,7 @@ message Region {
     string id = 1;
     string created_at = 2;
     repeated string worker_ids = 3;
+    // Add fields for region capabilities
+    repeated string supported_tee_types = 4;  // List of supported TEE types
+    uint32 max_tasks = 5;                     // Maximum concurrent tasks
 }

@@ -1,7 +1,69 @@
-// tee/proto/region_service.proto
 syntax = "proto3";
 
-package teeregion; 
+package teeregion;
+
+option go_package = "./pb;pb";  // Changed this line
+
+message RegionMetric {
+    string name = 1;
+    double value = 2;
+    string unit = 3;
+    string timestamp = 4;
+}
+
+// Renamed from Region to TEERegion to avoid conflicts
+message TEERegion {
+    string id = 1;
+    repeated bytes tee_ids = 2;
+    string status = 3;
+    string created_at = 4;
+    repeated RegionMetric metrics = 5;
+}
+
+message CreateRegionRequest {
+    string id = 1;
+    repeated bytes tee_ids = 2;
+}
+
+message CreateRegionResponse {
+    TEERegion region = 1;  // Updated reference
+}
+
+message UpdateRegionRequest {
+    string id = 1;
+    repeated bytes tee_ids = 2;
+    string status = 3;
+}
+
+message UpdateRegionResponse {
+    TEERegion region = 1;  // Updated reference
+}
+
+message DeleteRegionRequest {
+    string id = 1;
+}
+
+message DeleteRegionResponse {
+    bool success = 1;
+}
+
+message GetRegionStatusRequest {
+    string id = 1;
+}
+
+message GetRegionStatusResponse {
+    string id = 1;
+    string status = 2;
+    repeated RegionMetric metrics = 3;
+}
+
+message ListRegionsRequest {
+    // Optional filters could go here
+}
+
+message ListRegionsResponse {
+    repeated TEERegion regions = 1;  // Updated reference
+}
 
 service RegionService {
     // Create/update/delete regions
@@ -12,12 +74,4 @@ service RegionService {
     // Region status/health
     rpc GetRegionStatus(GetRegionStatusRequest) returns (GetRegionStatusResponse);
     rpc ListRegions(ListRegionsRequest) returns (ListRegionsResponse);
-}
-
-message Region {
-    string id = 1;
-    repeated bytes tee_ids = 2;
-    string status = 3;
-    string created_at = 4;
-    repeated RegionMetric metrics = 5;
 }
