@@ -1,68 +1,106 @@
 package compute
 
 import (
-    "context"
-    "github.com/ava-labs/hypersdk/chain"
-    pb "github.com/rhombus-tech/vm/tee/proto/pb"
-    "google.golang.org/grpc"
+   "bytes"
+   "context"
+   "fmt"
+
+   "github.com/rhombus-tech/vm/tee"
+   pb "github.com/rhombus-tech/vm/tee/proto/pb"
+   "google.golang.org/grpc"
+   "google.golang.org/grpc/connectivity"
 )
 
-// NodeClient handles communication with compute nodes
-type NodeClient struct {
-    client  pb.TeeExecutionClient
-    conn    *grpc.ClientConn
-    endpoint string
+// Add default paths
+const (
+    DefaultControllerPath = "/usr/local/bin/tee-controller"
+    DefaultWasmPath      = "/usr/local/bin/tee-wasm-module.wasm"
+)
+
+type NodeClientConfig struct {
+    Endpoint        string
+    ControllerPath  string
+    WasmPath        string
 }
 
-// ExecutionResult represents the result from a compute node
-type ExecutionResult struct {
-    Result       []byte
-    StateHash    []byte
-    Attestations [2]TEEAttestation
-    Timestamp    string
-}
-
-func NewNodeClient(endpoint string) (*NodeClient, error) {
-    conn, err := grpc.Dial(endpoint, grpc.WithInsecure())
-    if err != nil {
-        return nil, err
+func DefaultNodeClientConfig() NodeClientConfig {
+    return NodeClientConfig{
+        ControllerPath: "/usr/local/bin/tee-controller",
+        WasmPath:      "/usr/local/bin/tee-wasm-module.wasm",
     }
+}
+
+func NewNodeClient(config NodeClientConfig) (*NodeClient, error) {
+    // Setup gRPC connection
+    conn, err := grpc.Dial(config.Endpoint, grpc.WithInsecure())
+    if err != nil {
+        return nil, fmt.Errorf("failed to connect: %w", err)
+    }
+
+    // Initialize TEE bridge
+    bridge := tee.NewRustBridge(config.ControllerPath, config.WasmPath)
 
     return &NodeClient{
-        client:   pb.NewTeeExecutionClient(conn),
-        conn:     conn,
-        endpoint: endpoint,
+        endpoint:   config.Endpoint,
+        teeBridge:  bridge,
+        grpcClient: pb.NewTeeExecutionClient(conn),
+        conn:       conn,
     }, nil
 }
 
-func (c *NodeClient) Execute(ctx context.Context, action chain.Action) (*ExecutionResult, error) {
-    // Convert action to ExecutionRequest
-    req := &pb.ExecutionRequest{
-        // Fill request fields based on action
-    }
 
-    resp, err := c.client.Execute(ctx, req)
+// Execute sends a computation request to the compute node
+func (c *NodeClient) Execute(ctx context.Context, req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
+    // First execute in TEEs via Rust bridge
+    teeResult, err := c.teeBridge.Execute(ctx, req)
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("TEE execution failed: %w", err)
     }
 
-    // Convert response to ExecutionResult
-    return &ExecutionResult{
-        Result:       resp.Result,
-        StateHash:    resp.StateHash,
-        Attestations: convertAttestations(resp.Attestations),
-        Timestamp:    resp.Timestamp,
-    }, nil
+    // Then submit to compute node for coordination
+    result, err := c.grpcClient.Execute(ctx, req)
+    if err != nil {
+        return nil, fmt.Errorf("compute node execution failed: %w", err)
+    }
+
+    // Verify TEE result matches compute node result 
+    if !bytes.Equal(teeResult.StateHash, result.StateHash) {
+        return nil, fmt.Errorf("result mismatch between TEE and compute node")
+    }
+
+    return result, nil
 }
 
 func (c *NodeClient) ValidateConnection(ctx context.Context) error {
-    // Implement connection validation
+    // Validate gRPC connection
+    state := c.conn.GetState()
+    if state != connectivity.Ready {
+        return fmt.Errorf("connection not ready: %s", state)
+    }
+
+    // Validate TEE capabilities
+    if err := c.teeBridge.ValidatePlatforms(ctx); err != nil {
+        return fmt.Errorf("TEE validation failed: %w", err)
+    }
+
     return nil
 }
 
 func (c *NodeClient) Close() error {
-    if c.conn != nil {
-        return c.conn.Close()
+    var errs []error
+
+    // Close gRPC connection
+    if err := c.conn.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("failed to close gRPC connection: %w", err))
+    }
+
+    // Close TEE bridge
+    if err := c.teeBridge.Close(); err != nil {
+        errs = append(errs, fmt.Errorf("failed to close TEE bridge: %w", err))
+    }
+
+    if len(errs) > 0 {
+        return fmt.Errorf("multiple close errors: %v", errs)
     }
     return nil
 }
