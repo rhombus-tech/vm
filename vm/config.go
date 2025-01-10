@@ -3,16 +3,32 @@
 
 package vm
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/rhombus-tech/vm/compute"
+)
 
 // Config represents the configuration for the VM, including regional settings
 type Config struct {
-    // Basic VM config fields can go here
     NetworkID uint32 `json:"network_id"`
     ChainID   string `json:"chain_id"`
+    
+    ComputeNodeEndpoints map[string]string   `json:"compute_node_endpoints"`
+    VerificationOnly     bool               `json:"verification_only"`
+    Regions             []RegionConfig      `json:"regions"`
+    MaxCodeSize uint64 `json:"max_code_size"`
+}
 
-    // Regional configuration
-    Regions []RegionConfig `json:"regions"`
+func DefaultConfig() *Config {
+    return &Config{
+        NetworkID: 0,
+        ChainID: "",
+        MaxCodeSize: 1024 * 1024, // 1MB default
+        ComputeNodeEndpoints: make(map[string]compute.NodeClientConfig),
+        Regions: []RegionConfig{},
+        VerificationOnly:     false,
+    }
 }
 
 // RegionConfig represents the configuration for a single region

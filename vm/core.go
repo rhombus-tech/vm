@@ -2,17 +2,20 @@
 package vm
 
 import (
-    "context"
-    "fmt"
+	"context"
+	"fmt"
 
-    "github.com/ava-labs/avalanchego/ids"
-    "github.com/ava-labs/avalanchego/utils/logging"
-    "github.com/ava-labs/hypersdk/state"
-    "github.com/ava-labs/hypersdk/chain"
-    "go.uber.org/zap"
+	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/utils/logging"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/state"
+	"go.uber.org/zap"
 
-    "github.com/rhombus-tech/vm/verifier"
-    "github.com/rhombus-tech/vm/compute"
+    "github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/compute"
+	"github.com/rhombus-tech/vm/core"
+	pb "github.com/rhombus-tech/vm/tee/proto/pb"
+	"github.com/rhombus-tech/vm/verifier"
 )
 
 // ShuttleVM represents a validator node in the network
@@ -23,27 +26,45 @@ type ShuttleVM struct {
     computeNodes  map[string]*compute.NodeClient // Map of regionID to compute node client
     config        *Config
     logger        logging.Logger
+    codeValidator *CodeValidator                 
+    teeValidator  *Validator
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
     // Create verifier for attestation checking
-    stateVerifier := verifier.New(nil) // Will set state manager later
+    stateVerifier := verifier.New(nil) 
 
     // Initialize compute node connections
     computeNodes := make(map[string]*compute.NodeClient)
     for region, endpoint := range config.ComputeNodeEndpoints {
-        client, err := compute.NewNodeClient(endpoint)
+        // Create NodeClientConfig from endpoint string
+        nodeConfig := compute.NodeClientConfig{
+            Endpoint: endpoint,
+            ControllerPath: "/usr/local/bin/tee-controller", // Use appropriate defaults
+            WasmPath: "/usr/local/bin/tee-wasm-module.wasm",
+        }
+        
+        client, err := compute.NewNodeClient(nodeConfig)
         if err != nil {
             return nil, fmt.Errorf("failed to connect to compute node for region %s: %w", region, err)
         }
         computeNodes[region] = client
     }
 
+
+    // Create code validator with configured max size
+    codeValidator := NewCodeValidator(config.MaxCodeSize)
+
+    // Create TEE validator
+    teeValidator := NewValidator(stateVerifier)
+
     vm := &ShuttleVM{
-        config:       config,
-        computeNodes: computeNodes,
-        verifier:     stateVerifier,
-        logger:       logger,
+        config:        config,
+        computeNodes:  computeNodes,
+        verifier:      stateVerifier,
+        logger:        logger,
+        codeValidator: codeValidator,
+        teeValidator:  teeValidator,
     }
 
     return vm, nil
@@ -70,6 +91,7 @@ func (vm *ShuttleVM) Initialize(
     return nil
 }
 
+
 func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
     for region, client := range vm.computeNodes {
         // Test connection and verify TEE capabilities
@@ -77,6 +99,21 @@ func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
             return fmt.Errorf("compute node validation failed for region %s: %w", region, err)
         }
     }
+    return nil
+}
+
+// ValidateAndExecute validates and executes code in TEEs
+func (vm *ShuttleVM) ValidateAndExecute(ctx context.Context, code []byte, action *actions.SendEventAction) error {
+    // First validate code format
+    if err := vm.codeValidator.ValidateCode(code); err != nil {
+        return err
+    }
+    
+    // Then validate TEE execution
+    if err := vm.teeValidator.ValidateRegionalAction(ctx, action); err != nil {
+        return err
+    }
+    
     return nil
 }
 
@@ -91,18 +128,42 @@ func (vm *ShuttleVM) ExecuteInRegion(
         return nil, fmt.Errorf("no compute node available for region %s", regionID)
     }
 
+    // Convert chain.Action to ExecutionRequest
+    req := &pb.ExecutionRequest{
+        RegionId: regionID,
+        // Add appropriate field mappings based on your action type
+        // You may need to type assert the action to get specific fields
+    }
+
     // Execute on compute node
-    result, err := client.Execute(ctx, action)
+    result, err := client.Execute(ctx, req)
     if err != nil {
         return nil, err
     }
 
-    // Verify the attestation
-    if err := vm.verifier.VerifyAttestationPair(ctx, result.Attestations, nil); err != nil {
+    // Convert pb.TEEAttestation array to [2]core.TEEAttestation
+    var attestations [2]core.TEEAttestation
+    if len(result.Attestations) >= 2 {
+        for i := 0; i < 2; i++ {
+            attestations[i] = core.TEEAttestation{
+                EnclaveID:   result.Attestations[i].EnclaveId,
+                Measurement: result.Attestations[i].Measurement,
+                // Add other field conversions
+            }
+        }
+    }
+
+    // Verify the attestations
+    if err := vm.verifier.VerifyAttestationPair(ctx, attestations, nil); err != nil {
         return nil, fmt.Errorf("attestation verification failed: %w", err)
     }
 
-    return result, nil
+    return &compute.ExecutionResult{
+        StateHash:    result.StateHash,
+        Result:       result.Result,
+        Attestations: attestations,
+        Timestamp:    result.Timestamp,
+    }, nil
 }
 
 func (vm *ShuttleVM) Shutdown(ctx context.Context) error {

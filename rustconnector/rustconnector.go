@@ -2,15 +2,15 @@
 package rustconnector
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "sync"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"sync"
+	"time"
 
-    "github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/core"
 )
 
 // RustConnector handles interaction with the Rust TEE implementation
@@ -97,18 +97,18 @@ func (rc *RustConnector) ExecuteSGX(ctx context.Context, input []byte) (*core.Ex
 
     // Convert to core.ExecutionResult
     return &core.ExecutionResult{
-        Output:       rustResult.Result,
-        StateHash:    rustResult.ResultHash[:],
-        RegionID:     "",
-        Attestations: [2]core.TEEAttestation{
-            {
-                EnclaveID:   []byte("sgx-enclave"),
-                Measurement: rustResult.Attestation.Measurement[:],
-                Timestamp:   rustResult.Attestation.Timestamp,
-                Data:        rustResult.Attestation.PlatformData,
-            },
-        },
-    }, nil
+		Output:       rustResult.Result,
+		StateHash:    rustResult.ResultHash[:],
+		RegionID:     "",
+		Attestations: [2]core.TEEAttestation{
+			{
+				EnclaveID:   []byte("sgx-enclave"),
+				Measurement: rustResult.Attestation.Measurement[:],
+				Timestamp:   time.Unix(int64(rustResult.Attestation.Timestamp), 0), // Convert uint64 to time.Time
+				Data:        rustResult.Attestation.PlatformData,
+			},
+		},
+	}, nil
 }
 
 // ExecuteSEV executes code in SEV TEE
@@ -145,19 +145,20 @@ func (rc *RustConnector) ExecuteSEV(ctx context.Context, input []byte) (*core.Ex
         return nil, fmt.Errorf("failed to parse result: %w", err)
     }
 
-    return &core.ExecutionResult{
-        Output:       rustResult.Result,
-        StateHash:    rustResult.ResultHash[:],
-        RegionID:     "",
-        Attestations: [2]core.TEEAttestation{
-            {
-                EnclaveID:   []byte("sev-enclave"),
-                Measurement: rustResult.Attestation.Measurement[:],
-                Timestamp:   rustResult.Attestation.Timestamp,
-                Data:        rustResult.Attestation.PlatformData,
-            },
-        },
-    }, nil
+	return &core.ExecutionResult{
+		Output:       rustResult.Result,
+		StateHash:    rustResult.ResultHash[:],
+		RegionID:     "",
+		Attestations: [2]core.TEEAttestation{
+			{
+				EnclaveID:   []byte("sev-enclave"),
+				Measurement: rustResult.Attestation.Measurement[:],
+				Timestamp:   time.Unix(int64(rustResult.Attestation.Timestamp), 0), // Convert uint64 to time.Time
+				Data:        rustResult.Attestation.PlatformData,
+			},
+		},
+	}, nil
+	
 }
 
 // VerifyPlatforms checks if both TEE types are available

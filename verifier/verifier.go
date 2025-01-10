@@ -38,6 +38,10 @@ func New(state state.Mutable) *StateVerifier {
     }
 }
 
+func (v *StateVerifier) SetState(state state.Mutable) {
+    v.state = state
+}
+
 func (v *StateVerifier) VerifySystemState(ctx context.Context) error {
     // Verify input object exists and is valid
     inputID, err := storage.GetInputObject(ctx, v.state)
