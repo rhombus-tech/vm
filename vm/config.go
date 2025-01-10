@@ -14,12 +14,11 @@ type Config struct {
     NetworkID uint32 `json:"network_id"`
     ChainID   string `json:"chain_id"`
     
-    ComputeNodeEndpoints map[string]string   `json:"compute_node_endpoints"`
+    ComputeNodeEndpoints map[string]compute.NodeClientConfig `json:"compute_node_endpoints"`
     VerificationOnly     bool               `json:"verification_only"`
     Regions             []RegionConfig      `json:"regions"`
     MaxCodeSize uint64 `json:"max_code_size"`
 }
-
 func DefaultConfig() *Config {
     return &Config{
         NetworkID: 0,

@@ -35,13 +35,16 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
     stateVerifier := verifier.New(nil) 
 
     // Initialize compute node connections
+    // Declare the map first!
     computeNodes := make(map[string]*compute.NodeClient)
-    for region, endpoint := range config.ComputeNodeEndpoints {
-        // Create NodeClientConfig from endpoint string
-        nodeConfig := compute.NodeClientConfig{
-            Endpoint: endpoint,
-            ControllerPath: "/usr/local/bin/tee-controller", // Use appropriate defaults
-            WasmPath: "/usr/local/bin/tee-wasm-module.wasm",
+    
+    for region, nodeConfig := range config.ComputeNodeEndpoints {
+        // Set default paths if they're empty
+        if nodeConfig.ControllerPath == "" {
+            nodeConfig.ControllerPath = "/usr/local/bin/tee-controller"
+        }
+        if nodeConfig.WasmPath == "" {
+            nodeConfig.WasmPath = "/usr/local/bin/tee-wasm-module.wasm"
         }
         
         client, err := compute.NewNodeClient(nodeConfig)
@@ -51,7 +54,6 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
         computeNodes[region] = client
     }
 
-
     // Create code validator with configured max size
     codeValidator := NewCodeValidator(config.MaxCodeSize)
 
@@ -60,7 +62,7 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
 
     vm := &ShuttleVM{
         config:        config,
-        computeNodes:  computeNodes,
+        computeNodes:  computeNodes,  // Now computeNodes is defined
         verifier:      stateVerifier,
         logger:        logger,
         codeValidator: codeValidator,

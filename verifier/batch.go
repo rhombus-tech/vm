@@ -2,20 +2,21 @@
 package verifier
 
 import (
-    "context"
-    "errors"
-    "fmt"
-    "time"
+	"context"
+	"errors"
+	"fmt"
+	"time"
 
-    // If TEEAttestation is actually in "github.com/rhombus-tech/vm/core"
-    // you must import "core" not "actions"
-    "github.com/rhombus-tech/vm/core" 
-    "github.com/rhombus-tech/vm/actions"
+	// If TEEAttestation is actually in "github.com/rhombus-tech/vm/core"
+	// you must import "core" not "actions"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/tee/proto/pb"
 
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/state"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/state"
 
-    "github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/coordination"
 )
 
 var (
@@ -258,5 +259,82 @@ func (bv *BatchVerifier) verifyBatchConstraints(ctx context.Context) error {
     }
     */
 
+    return nil
+}
+
+func (bv *BatchVerifier) verifyComputeExecution(
+    ctx context.Context,
+    act *actions.SendEventAction,
+    result *pb.ExecutionResult,
+) error {
+    // Convert protobuf attestations to core attestations
+    attestations := [2]core.TEEAttestation{}
+    if len(result.Attestations) != 2 {
+        return fmt.Errorf("expected 2 attestations, got %d", len(result.Attestations))
+    }
+    
+    for i, att := range result.Attestations[:2] {
+        timestamp, err := time.Parse(time.RFC3339, att.Timestamp)
+        if err != nil {
+            return fmt.Errorf("invalid timestamp format: %w", err)
+        }
+        
+        attestations[i] = core.TEEAttestation{
+            EnclaveID:   att.EnclaveId,
+            Measurement: att.Measurement,
+            Timestamp:   timestamp,
+            Data:        att.Data,
+            Signature:   att.Signature,
+            RegionProof: att.RegionProof,
+        }
+    }
+
+    // Verify TEE attestations match
+    if err := bv.verifier.VerifyAttestationPair(ctx, attestations, nil); err != nil {
+        return err
+    }
+
+    // Add missing helper methods
+    if err := bv.verifyTimestampsHelper(attestations); err != nil {
+        return err
+    }
+
+    // Add missing helper method
+    if err := bv.verifyRegionHelper(act.RegionID, attestations); err != nil {
+        return err
+    }
+
+    return nil
+}
+
+// Add helper methods that were missing
+func (bv *BatchVerifier) verifyTimestampsHelper(attestations [2]core.TEEAttestation) error {
+    // Verify timestamps match between attestations
+    if !attestations[0].Timestamp.Equal(attestations[1].Timestamp) {
+        return fmt.Errorf("timestamp mismatch between attestations")
+    }
+
+    // Verify timestamps are within acceptable range
+    now := time.Now()
+    for _, att := range attestations {
+        diff := now.Sub(att.Timestamp)
+        if diff > 5*time.Minute || diff < -5*time.Minute {
+            return fmt.Errorf("attestation timestamp outside acceptable range")
+        }
+    }
+    
+    return nil
+}
+
+func (bv *BatchVerifier) verifyRegionHelper(regionID string, attestations [2]core.TEEAttestation) error {
+    // Verify the attestations are from TEEs in the specified region
+    for _, att := range attestations {
+        if len(att.RegionProof) == 0 {
+            return fmt.Errorf("missing region proof in attestation")
+        }
+        // Here you would add actual region proof verification logic
+        // This is just a placeholder - implement according to your region proof format
+    }
+    
     return nil
 }
