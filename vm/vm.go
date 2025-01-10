@@ -3,15 +3,18 @@
 package vm
 
 import (
-	"fmt"
+    "context"
+    "fmt"
+    "sync"
 
-	"github.com/ava-labs/avalanchego/utils/wrappers"
-	"github.com/ava-labs/hypersdk/auth"
-	"github.com/ava-labs/hypersdk/chain"
-	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/vm"
+    "github.com/ava-labs/avalanchego/ids"
+    "github.com/ava-labs/avalanchego/utils/wrappers"
+    "github.com/ava-labs/hypersdk/auth"
+    "github.com/ava-labs/hypersdk/chain"
+    "github.com/ava-labs/hypersdk/codec"
+    sdkvm "github.com/ava-labs/hypersdk/vm"
 
-	"github.com/rhombus-tech/vm/actions"
+    "github.com/rhombus-tech/vm/actions"
 )
 
 var (
@@ -19,6 +22,11 @@ var (
     AuthParser   *codec.TypeParser[chain.Auth]
     OutputParser *codec.TypeParser[codec.Typed]
 )
+
+type validatorManager struct {
+    validators  map[string]*verifier.StateVerifier
+    validatorMu sync.RWMutex
+}
 
 // Setup types
 func init() {
@@ -47,16 +55,79 @@ func init() {
     }
 }
 
+// Add this method to the existing ShuttleVM
+func (vm *ShuttleVM) initializeValidators() {
+    vm.validatorMgr = &validatorManager{
+        validators: make(map[string]*verifier.StateVerifier),
+    }
 
-func With(name string, defaultValue interface{}) vm.Option {
-    return vm.NewOption(
+    // Create separate validator for each region
+    for _, region := range vm.config.Regions {
+        validator := verifier.New(vm.stateManager)
+        vm.validatorMgr.validators[region.ID] = validator
+    }
+}
+
+// Add regional validation to existing ValidateTransaction
+func (vm *ShuttleVM) validateRegionalActions(ctx context.Context, tx *chain.Transaction) error {
+    // Group actions by region
+    regionActions := make(map[string][]chain.Action)
+    
+    for _, action := range tx.Actions {
+        if regionalAction, ok := action.(interface{ GetRegionID() string }); ok {
+            regionID := regionalAction.GetRegionID()
+            regionActions[regionID] = append(regionActions[regionID], action)
+        }
+    }
+
+    // Validate actions for each region in parallel
+    var wg sync.WaitGroup
+    errChan := make(chan error, len(regionActions))
+
+    for regionID, actions := range regionActions {
+        wg.Add(1)
+        go func(rid string, acts []chain.Action) {
+            defer wg.Done()
+            
+            vm.validatorMgr.validatorMu.RLock()
+            validator := vm.validatorMgr.validators[rid]
+            vm.validatorMgr.validatorMu.RUnlock()
+
+            if validator == nil {
+                errChan <- fmt.Errorf("no validator for region %s", rid)
+                return
+            }
+
+            for _, act := range acts {
+                if err := validator.VerifyStateTransition(ctx, act); err != nil {
+                    errChan <- fmt.Errorf("validation failed for region %s: %w", rid, err)
+                    return
+                }
+            }
+        }(regionID, actions)
+    }
+
+    // Wait for all validations to complete
+    wg.Wait()
+    close(errChan)
+
+    // Check for any errors
+    for err := range errChan {
+        if err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
+
+func With(name string, defaultValue interface{}) sdkvm.Option {
+    return sdkvm.NewOption(
         name,
         defaultValue,
-        func(v *vm.VM, cfg interface{}) error {
+        func(v *sdkvm.VM, cfg interface{}) error {
             fmt.Printf("Received config for [%s]: %v\n", name, cfg)
-            // Your configuration logic here
-            return nil  // Return error directly instead of using NewOpt
+            return nil
         },
     )
 }
-

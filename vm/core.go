@@ -28,6 +28,7 @@ type ShuttleVM struct {
     logger        logging.Logger
     codeValidator *CodeValidator                 
     teeValidator  *Validator
+    validatorMgr *validatorManager
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
@@ -90,6 +91,8 @@ func (vm *ShuttleVM) Initialize(
         }
     }
 
+    vm.initializeValidators()
+
     return nil
 }
 
@@ -101,6 +104,32 @@ func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
             return fmt.Errorf("compute node validation failed for region %s: %w", region, err)
         }
     }
+    return nil
+}
+
+func (vm *ShuttleVM) ValidateTransaction(ctx context.Context, tx *chain.Transaction) error {
+    // Verify tx format
+    if err := tx.Verify(); err != nil {
+        return err
+    }
+
+    // Verify action format 
+    if err := tx.AuthVerify(); err != nil {
+        return err
+    }
+
+    // Verify regional actions
+    if err := vm.validateRegionalActions(ctx, tx); err != nil {
+        return err
+    }
+
+    // Verify state transitions
+    for _, action := range tx.Actions {
+        if err := vm.verifier.VerifyStateTransition(ctx, action); err != nil {
+            return err
+        }
+    }
+
     return nil
 }
 
