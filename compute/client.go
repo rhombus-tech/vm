@@ -17,6 +17,13 @@ const (
     DefaultWasmPath      = "/usr/local/bin/tee-wasm-module.wasm"
 )
 
+type NodeClient struct {
+    endpoint   string
+    teeBridge  *tee.RustBridge
+    grpcClient pb.TeeExecutionClient
+    conn       *grpc.ClientConn
+}
+
 type NodeClientConfig struct {
     Endpoint        string
     ControllerPath  string
