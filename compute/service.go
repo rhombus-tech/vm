@@ -1,18 +1,19 @@
 package compute
 
 import (
+    "bytes"
     "context"
-    "encoding/json"
     "errors"
     "fmt"
     "io/ioutil"
     "os"
-    "os/exec"
     "sync"
     "time"
 
     "github.com/rhombus-tech/vm/coordination"
+    "github.com/rhombus-tech/vm/core"
     pb "github.com/rhombus-tech/vm/tee/proto"
+    "github.com/rhombus-tech/vm/tee"
 )
 
 var (
@@ -28,20 +29,20 @@ type ComputeNode struct {
     maxTasks    int
     activeTasks int
     taskLock    sync.Mutex
-    
-    wasmPath    string
-    controller  string
 
+    bridge      *tee.RustBridge
     coordinator *coordination.Coordinator
     workers     map[string]*coordination.Worker
     workerLock  sync.RWMutex
 }
 
+// TempFile can stay the same as it's still useful for handling temporary files
 type TempFile struct {
     *os.File
     path string
 }
 
+// Keep createTempFile and cleanupTempFile helpers
 func createTempFile(data []byte) (*TempFile, error) {
     tmpFile, err := ioutil.TempFile("", "tee-execution-*")
     if err != nil {
@@ -69,15 +70,22 @@ func cleanupTempFile(f *TempFile) {
     }
 }
 
+// Update AttestationReport to match RustBridge format
 type AttestationReport struct {
     EnclaveType    string    `json:"enclave_type"`
     EnclaveID      []byte    `json:"enclave_id"`
-    Measurement    [32]byte  `json:"measurement"`
-    Timestamp      uint64    `json:"timestamp"`
+    Measurement    []byte    `json:"measurement"`  // Changed from [32]byte to []byte to be more flexible
+    Timestamp      time.Time `json:"timestamp"`    // Changed from uint64 to time.Time
     PlatformData   []byte    `json:"platform_data"`
+    RegionProof    []byte    `json:"region_proof"` // Added for region verification
 }
 
+// Add constructor for ComputeNode
 func NewComputeNode(regionID string, config *Config) (*ComputeNode, error) {
+    // Create RustBridge instance
+    bridge := tee.NewRustBridge(config.ControllerPath, config.WasmPath)
+
+    // Create coordinator
     coordConfig := &coordination.Config{
         MinWorkers:      2,
         MaxWorkers:      2,
@@ -93,35 +101,106 @@ func NewComputeNode(regionID string, config *Config) (*ComputeNode, error) {
     node := &ComputeNode{
         regionID:    regionID,
         maxTasks:    config.MaxTasks,
-        wasmPath:    config.WasmPath,
-        controller:  config.ControllerPath,
+        bridge:      bridge,
         coordinator: coord,
         workers:     make(map[string]*coordination.Worker),
     }
 
+    // Register workers
     if err := node.registerWorkers(); err != nil {
         return nil, err
-    }
-
-    if err := coord.Start(); err != nil {
-        return nil, fmt.Errorf("failed to start coordinator: %w", err)
     }
 
     return node, nil
 }
 
+// Add helper to register workers
 func (n *ComputeNode) registerWorkers() error {
-    sgxWorker := coordination.WorkerID(fmt.Sprintf("sgx-%s", n.regionID))
-    if err := n.coordinator.RegisterWorker(context.Background(), sgxWorker, []byte("sgx-enclave")); err != nil {
-        return fmt.Errorf("failed to register SGX worker: %w", err)
-    }
+    n.workerLock.Lock()
+    defer n.workerLock.Unlock()
 
+    // Register SGX worker
+    sgxWorker := coordination.WorkerID(fmt.Sprintf("sgx-%s", n.regionID))
+    sgx := &coordination.Worker{
+        ID: sgxWorker,
+        EnclaveID: []byte("sgx-enclave"),
+    }
+    n.workers[string(sgxWorker)] = sgx
+
+    // Register SEV worker
     sevWorker := coordination.WorkerID(fmt.Sprintf("sev-%s", n.regionID))
-    if err := n.coordinator.RegisterWorker(context.Background(), sevWorker, []byte("sev-enclave")); err != nil {
-        return fmt.Errorf("failed to register SEV worker: %w", err)
+    sev := &coordination.Worker{
+        ID: sevWorker,
+        EnclaveID: []byte("sev-enclave"),
+    }
+    n.workers[string(sevWorker)] = sev
+
+    // Register with coordinator
+    for _, worker := range n.workers {
+        if err := n.coordinator.RegisterWorker(context.Background(), worker.ID, worker.EnclaveID); err != nil {
+            return fmt.Errorf("failed to register worker %s: %w", worker.ID, err)
+        }
     }
 
     return nil
+}
+
+func convertToRustRequest(req *pb.ExecutionRequest) *tee.ExecutionRequest {
+    return &tee.ExecutionRequest{
+        IdTo:         req.IdTo,
+        FunctionCall: req.FunctionCall,
+        Parameters:   req.Parameters,
+        RegionId:     req.RegionId,
+    }
+}
+
+func convertToProtoResult(result *core.ExecutionResult) *pb.ExecutionResult {
+    attestations := make([]*pb.TEEAttestation, len(result.Attestations))
+    for i, att := range result.Attestations {
+        attestations[i] = &pb.TEEAttestation{
+            EnclaveId:   att.EnclaveID,
+            Measurement: att.Measurement,
+            Timestamp:   att.Timestamp.Format(time.RFC3339),
+            Data:        att.Data,
+            RegionProof: att.RegionProof,
+        }
+    }
+
+    return &pb.ExecutionResult{
+        Timestamp:    time.Now().UTC().Format(time.RFC3339),
+        Attestations: attestations,
+        StateHash:    result.StateHash,
+        Result:       result.Output,
+    }
+}
+
+// Add conversion helpers
+func (n *ComputeNode) convertToRustAttestation(att *pb.TEEAttestation) (*AttestationReport, error) {
+    timestamp, err := time.Parse(time.RFC3339, att.Timestamp)
+    if err != nil {
+        return nil, fmt.Errorf("invalid timestamp format: %w", err)
+    }
+
+    return &AttestationReport{
+        EnclaveType:  determineEnclaveType(att.EnclaveId),
+        EnclaveID:    att.EnclaveId,
+        Measurement:  att.Measurement,
+        Timestamp:    timestamp,
+        PlatformData: att.Data,
+        RegionProof:  att.RegionProof,
+    }, nil
+}
+
+func determineEnclaveType(enclaveID []byte) string {
+    // Logic to determine if this is an SGX or SEV enclave
+    // Could be based on ID prefix, format, etc.
+    if bytes.HasPrefix(enclaveID, []byte("sgx-")) {
+        return "SGX"
+    }
+    if bytes.HasPrefix(enclaveID, []byte("sev-")) {
+        return "SEV"
+    }
+    return "UNKNOWN"
 }
 
 func (n *ComputeNode) acquireTaskSlot() bool {
@@ -141,6 +220,20 @@ func (n *ComputeNode) releaseTaskSlot() {
     n.taskLock.Unlock()
 }
 
+func (n *ComputeNode) executeTEE(ctx context.Context, req *pb.ExecutionRequest) (*core.ExecutionResult, error) {
+    // Convert proto request to Rust format
+    rustReq := convertToRustRequest(req)
+    
+    // Execute using RustBridge
+    result, err := n.bridge.Execute(ctx, rustReq)
+    if err != nil {
+        return nil, fmt.Errorf("TEE execution failed: %w", err)
+    }
+    
+    return result, nil
+}
+
+// Update Execute to use conversions
 func (n *ComputeNode) Execute(ctx context.Context, req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
     if req.RegionId == "" {
         return nil, ErrNoRegion
@@ -154,12 +247,18 @@ func (n *ComputeNode) Execute(ctx context.Context, req *pb.ExecutionRequest) (*p
     }
     defer n.releaseTaskSlot()
 
+    // Execute in TEE using RustBridge
+    coreResult, err := n.executeTEE(ctx, req)
+    if err != nil {
+        return nil, err
+    }
+
     // Create coordination task
     task := &coordination.Task{
         ID: fmt.Sprintf("task-%s-%d", n.regionID, time.Now().UnixNano()),
         WorkerIDs: []coordination.WorkerID{
-            coordination.WorkerID(fmt.Sprintf("sgx-%s", n.regionID)),
-            coordination.WorkerID(fmt.Sprintf("sev-%s", n.regionID)),
+            coordination.WorkerID(coreResult.Attestations[0].EnclaveID),
+            coordination.WorkerID(coreResult.Attestations[1].EnclaveID),
         },
         Data:    req.Parameters,
         Timeout: 5 * time.Minute,
@@ -170,126 +269,128 @@ func (n *ComputeNode) Execute(ctx context.Context, req *pb.ExecutionRequest) (*p
         return nil, fmt.Errorf("coordination failed: %w", err)
     }
 
-    // Execute in TEEs
-    results, err := n.executeInTEEs(ctx, req.Parameters)
+    // Establish secure channels
+    channels, err := n.establishSecureChannels(ctx, coreResult)
     if err != nil {
         return nil, err
     }
-
-    // Establish secure channels
-    channels, err := n.establishSecureChannels(ctx, results)
-    if err != nil {
-        return nil, fmt.Errorf("failed to establish secure channels: %w", err)
-    }
+    defer func() {
+        for _, ch := range channels {
+            ch.Close()
+        }
+    }()
 
     // Exchange verification messages
-    if err := n.exchangeVerification(ctx, channels, results); err != nil {
-        return nil, fmt.Errorf("verification failed: %w", err)
+    if err := n.exchangeVerification(ctx, channels, coreResult); err != nil {
+        return nil, err
     }
 
-    return n.createExecutionResult(results), nil
+    // Convert core result to proto result
+    return convertToProtoResult(coreResult), nil
 }
 
-type executionResults struct {
-    SGX ExternalResult
-    SEV ExternalResult
-}
 
-type ExternalResult struct {
-    ResultHash   [32]byte           `json:"result_hash"`
-    Result       []byte             `json:"result"`
-    Attestation  AttestationReport  `json:"attestation"`
-}
+// Add helper for attestation verification
+func (n *ComputeNode) verifyAttestations(ctx context.Context, attestations [2]core.TEEAttestation) error {
+    // Create secure channels between TEEs
+    channels := make(map[string]*coordination.SecureChannel)
 
-func (n *ComputeNode) executeInTEEs(ctx context.Context, params []byte) (*executionResults, error) {
-    inputFile, err := createTempFile(params)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create input file: %w", err)
-    }
-    defer cleanupTempFile(inputFile)
-
-    outputFile, err := createTempFile(nil)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create output file: %w", err)
-    }
-    defer cleanupTempFile(outputFile)
-
-    cmd := exec.CommandContext(ctx, n.controller,
-        "--wasm-module", n.wasmPath,
-        "--input", inputFile.path,
-        "--output", outputFile.path,
-        "--verbose",
+    // Establish channel between SGX and SEV
+    channel := coordination.NewSecureChannel(
+        coordination.WorkerID(attestations[0].EnclaveID),
+        coordination.WorkerID(attestations[1].EnclaveID),
     )
+    if err := channel.EstablishSecure(); err != nil {
+        return err
+    }
+    channels["sgx-sev"] = channel
+    defer channel.Close()
 
-    output, err := cmd.CombinedOutput()
-    if err != nil {
-        return nil, fmt.Errorf("execution failed: %w: %s", err, string(output))
+    // Exchange verification messages
+    verificationMsg := &coordination.Message{
+        Type: coordination.MessageTypeVerification,
+        Data: attestations[0].Data, // Use first attestation's data
     }
 
-    var results executionResults
-    if err := json.Unmarshal(output, &results); err != nil {
-        return nil, fmt.Errorf("failed to parse result: %w", err)
+    if err := channel.Send(verificationMsg.Data); err != nil {
+        return fmt.Errorf("failed to send verification message: %w", err)
     }
 
-    return &results, nil
+    return nil
 }
 
-func (n *ComputeNode) establishSecureChannels(ctx context.Context, results *executionResults) (map[string]*coordination.SecureChannel, error) {
+// Add helper for converting attestations
+func (n *ComputeNode) convertAttestations(attestations [2]core.TEEAttestation) []*pb.TEEAttestation {
+    result := make([]*pb.TEEAttestation, 2)
+    
+    for i, att := range attestations {
+        result[i] = &pb.TEEAttestation{
+            EnclaveId:   att.EnclaveID,
+            Measurement: att.Measurement,
+            Timestamp:   att.Timestamp.Format(time.RFC3339),
+            Data:        att.Data,
+            RegionProof: att.RegionProof,
+        }
+    }
+    
+    return result
+}
+
+
+func (n *ComputeNode) establishSecureChannels(ctx context.Context, result *core.ExecutionResult) (map[string]*coordination.SecureChannel, error) {
     channels := make(map[string]*coordination.SecureChannel)
 
     channel := coordination.NewSecureChannel(
-        coordination.WorkerID(fmt.Sprintf("sgx-%s", n.regionID)),
-        coordination.WorkerID(fmt.Sprintf("sev-%s", n.regionID)),
+        coordination.WorkerID(result.Attestations[0].EnclaveID),
+        coordination.WorkerID(result.Attestations[1].EnclaveID),
     )
 
     if err := channel.EstablishSecure(); err != nil {
-        return nil, err
+        return nil, fmt.Errorf("failed to establish secure channel: %w", err)
     }
 
     channels["sgx-sev"] = channel
     return channels, nil
 }
 
-func (n *ComputeNode) exchangeVerification(ctx context.Context, channels map[string]*coordination.SecureChannel, results *executionResults) error {
+func (n *ComputeNode) exchangeVerification(ctx context.Context, channels map[string]*coordination.SecureChannel, result *core.ExecutionResult) error {
     msg := &coordination.Message{
         Type: coordination.MessageTypeVerification,
-        Data: results.SGX.ResultHash[:],
+        Data: result.StateHash,
     }
 
     for _, channel := range channels {
         if err := channel.Send(msg.Data); err != nil {
-            return err
+            return fmt.Errorf("failed to send verification message: %w", err)
         }
     }
 
     return nil
 }
 
-func (n *ComputeNode) createExecutionResult(results *executionResults) *pb.ExecutionResult {
-    sgxAtt := &pb.TEEAttestation{
-        EnclaveId:   results.SGX.Attestation.EnclaveID,
-        Measurement: results.SGX.Attestation.Measurement[:],
-        Timestamp:   time.Unix(int64(results.SGX.Attestation.Timestamp), 0).Format(time.RFC3339),
-        Data:        results.SGX.Attestation.PlatformData,
-        RegionProof: []byte{},
-    }
-
-    sevAtt := &pb.TEEAttestation{
-        EnclaveId:   results.SEV.Attestation.EnclaveID,
-        Measurement: results.SEV.Attestation.Measurement[:],
-        Timestamp:   time.Unix(int64(results.SEV.Attestation.Timestamp), 0).Format(time.RFC3339),
-        Data:        results.SEV.Attestation.PlatformData,
-        RegionProof: []byte{},
+// Update createExecutionResult to convert from RustBridge format to protobuf
+func (n *ComputeNode) createExecutionResult(result *core.ExecutionResult) *pb.ExecutionResult {
+    attestations := make([]*pb.TEEAttestation, 2)
+    
+    for i, att := range result.Attestations {
+        attestations[i] = &pb.TEEAttestation{
+            EnclaveId:   att.EnclaveID,
+            Measurement: att.Measurement,
+            Timestamp:   att.Timestamp.Format(time.RFC3339),
+            Data:        att.Data,
+            RegionProof: att.RegionProof,
+        }
     }
 
     return &pb.ExecutionResult{
         Timestamp:    time.Now().UTC().Format(time.RFC3339),
-        Attestations: []*pb.TEEAttestation{sgxAtt, sevAtt},
-        StateHash:    results.SGX.ResultHash[:],
-        Result:       results.SGX.Result,
+        Attestations: attestations,
+        StateHash:    result.StateHash,
+        Result:       result.Output,
     }
 }
 
+// Keep GetRegions unchanged as it's part of the gRPC interface
 func (n *ComputeNode) GetRegions(_ context.Context, _ *pb.GetRegionsRequest) (*pb.GetRegionsResponse, error) {
     region := &pb.Region{
         Id:        n.regionID,
@@ -302,9 +403,24 @@ func (n *ComputeNode) GetRegions(_ context.Context, _ *pb.GetRegionsRequest) (*p
     return &pb.GetRegionsResponse{Regions: []*pb.Region{region}}, nil
 }
 
+// Update Close to cleanup both bridge and coordinator
 func (n *ComputeNode) Close() error {
+    var errs []error
+    
+    if n.bridge != nil {
+        if err := n.bridge.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("failed to close bridge: %w", err))
+        }
+    }
+
     if n.coordinator != nil {
-        return n.coordinator.Stop()
+        if err := n.coordinator.Stop(); err != nil {
+            errs = append(errs, fmt.Errorf("failed to stop coordinator: %w", err))
+        }
+    }
+
+    if len(errs) > 0 {
+        return fmt.Errorf("multiple close errors: %v", errs)
     }
     return nil
 }

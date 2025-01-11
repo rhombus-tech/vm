@@ -56,10 +56,22 @@ func NewNodeClient(config NodeClientConfig) (*NodeClient, error) {
 }
 
 
-// Execute sends a computation request to the compute node
+func convertProtoToTeeRequest(req *pb.ExecutionRequest) *tee.ExecutionRequest {
+    return &tee.ExecutionRequest{
+        IdTo:         req.IdTo,
+        FunctionCall: req.FunctionCall,
+        Parameters:   req.Parameters,
+        RegionId:     req.RegionId,
+    }
+}
+
+// Then modify the Execute method
 func (c *NodeClient) Execute(ctx context.Context, req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
+    // Convert proto request to tee request
+    teeReq := convertProtoToTeeRequest(req)
+    
     // First execute in TEEs via Rust bridge
-    teeResult, err := c.teeBridge.Execute(ctx, req)
+    teeResult, err := c.teeBridge.Execute(ctx, teeReq)
     if err != nil {
         return nil, fmt.Errorf("TEE execution failed: %w", err)
     }

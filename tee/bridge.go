@@ -1,21 +1,20 @@
-// tee/bridge.go
 package tee
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"io/ioutil"
-	"os"
-	"os/exec"
-	"time"
+    "context"
+    "encoding/json"
+    "fmt"
+    "io/ioutil"
+    "os"
+    "os/exec"
+    "time"
 
-	pb "github.com/rhombus-tech/vm/tee/proto/pb"
+    "github.com/rhombus-tech/vm/core"
 )
 
 type RustBridge struct {
     controllerPath string
-    wasmPath      string // Path to WASM module
+    wasmPath      string
 }
 
 func NewRustBridge(controllerPath string, wasmPath string) *RustBridge {
@@ -25,20 +24,25 @@ func NewRustBridge(controllerPath string, wasmPath string) *RustBridge {
     }
 }
 
+// Update rust types to match core types better
 type rustExecutionResult struct {
-    ResultHash   [32]byte          `json:"result_hash"`
-    Result       []byte            `json:"result"`
-    Attestation  rustAttestation   `json:"attestation"`
+    ResultHash   [32]byte           `json:"result_hash"`
+    Result       []byte             `json:"result"`
+    Attestations [2]rustAttestation `json:"attestations"` // Changed to array of 2
+    RegionID     string             `json:"region_id"`
 }
 
 type rustAttestation struct {
     EnclaveType    string    `json:"enclave_type"`
-    Measurement    [32]byte  `json:"measurement"`
+    EnclaveID      []byte    `json:"enclave_id"`
+    Measurement    []byte    `json:"measurement"`
     Timestamp      uint64    `json:"timestamp"`
     PlatformData   []byte    `json:"platform_data"`
+    RegionProof    []byte    `json:"region_proof"`
 }
 
-func (rb *RustBridge) Execute(ctx context.Context, req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
+// Update Execute to return core.ExecutionResult
+func (rb *RustBridge) Execute(ctx context.Context, req *ExecutionRequest) (*core.ExecutionResult, error) {
     // Create temporary file for input parameters
     inputFile, err := createTempFile(req.Parameters)
     if err != nil {
@@ -50,6 +54,8 @@ func (rb *RustBridge) Execute(ctx context.Context, req *pb.ExecutionRequest) (*p
     cmd := exec.CommandContext(ctx, rb.controllerPath,
         "--wasm-module", rb.wasmPath,
         "--input", inputFile.path,
+        "--region", req.RegionId,
+        "--function", req.FunctionCall,
         "--verbose",
     )
     
@@ -64,31 +70,43 @@ func (rb *RustBridge) Execute(ctx context.Context, req *pb.ExecutionRequest) (*p
         return nil, fmt.Errorf("failed to parse rust result: %w", err)
     }
 
-    // Convert to protobuf format
-    attestations := []*pb.TEEAttestation{
-        convertRustAttestation(rustResult.Attestation, "sgx"),
-        convertRustAttestation(rustResult.Attestation, "sev"),
+    // Convert to core.ExecutionResult
+    return convertToCoreResult(rustResult)
+}
+
+// Add conversion helper
+func convertToCoreResult(rust rustExecutionResult) (*core.ExecutionResult, error) {
+    attestations := [2]core.TEEAttestation{}
+    
+    for i, rustAtt := range rust.Attestations {
+        timestamp := time.Unix(int64(rustAtt.Timestamp), 0)
+        
+        attestations[i] = core.TEEAttestation{
+            EnclaveID:   rustAtt.EnclaveID,
+            Measurement: rustAtt.Measurement,
+            Timestamp:   timestamp,
+            Data:        rustAtt.PlatformData,
+            RegionProof: rustAtt.RegionProof,
+        }
     }
 
-    return &pb.ExecutionResult{
-        StateHash:    rustResult.ResultHash[:],
-        Result:       rustResult.Result,
+    return &core.ExecutionResult{
+        StateHash:    rust.ResultHash[:],
+        Output:       rust.Result,
         Attestations: attestations,
-        Timestamp:    time.Unix(int64(rustResult.Attestation.Timestamp), 0).Format(time.RFC3339),
+        RegionID:     rust.RegionID,
     }, nil
 }
 
-func convertRustAttestation(att rustAttestation, teeType string) *pb.TEEAttestation {
-    return &pb.TEEAttestation{
-        EnclaveId:   []byte(teeType), // You may want to generate proper enclave IDs
-        Measurement: att.Measurement[:],
-        Timestamp:   time.Unix(int64(att.Timestamp), 0).Format(time.RFC3339),
-        Data:        att.PlatformData,
-        RegionProof: []byte{}, // Add region proof if needed
-    }
+// Add ExecutionRequest type
+type ExecutionRequest struct {
+    IdTo         string `json:"id_to"`
+    FunctionCall string `json:"function_call"`
+    Parameters   []byte `json:"parameters"`
+    RegionId     string `json:"region_id"`
 }
 
-// Helper functions from your compute package
+// Keep helper functions
 type TempFile struct {
     *os.File
     path string
@@ -130,6 +148,5 @@ func (rb *RustBridge) ValidatePlatforms(ctx context.Context) error {
 }
 
 func (rb *RustBridge) Close() error {
-    // Nothing to clean up for now
     return nil
 }
