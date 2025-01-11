@@ -3,6 +3,7 @@
 package storage
 
 import (
+    "bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -43,6 +44,7 @@ const (
    coordPrefix     = 0x8
 )
 
+
 const BalanceChunks uint16 = 1
 
 var (
@@ -66,6 +68,41 @@ type TaskState struct {
    Workers     []coordination.WorkerID `json:"workers"`
    Attestations [][2][]byte          `json:"attestations"`
    Timestamp    string               `json:"timestamp"`
+}
+
+// Key management functions for regional storage
+func makeKey(regionID string, prefix byte, id string) []byte {
+    if regionID == "" {
+        k := make([]byte, 1+len(id))
+        k[0] = prefix
+        copy(k[1:], []byte(id))
+        return k
+    }
+    // For regional keys, format: r/<region_id>/<prefix>/<id>
+    return []byte(fmt.Sprintf("r/%s/%d/%s", regionID, prefix, id))
+}
+
+func makeObjectKey(regionID, id string) []byte {
+    return makeKey(regionID, objectPrefix, id)
+}
+
+func makeEventKey(regionID, timestamp, id string) []byte {
+    if regionID == "" {
+        return EventKey(timestamp, id) // Use existing EventKey function
+    }
+    return makeKey(regionID, eventPrefix, fmt.Sprintf("%s/%s", timestamp, id))
+}
+
+func makeStateKey(regionID, id string) []byte {
+    return makeKey(regionID, coordPrefix, id)
+}
+
+func extractRegionFromKey(key []byte) string {
+    parts := bytes.Split(key, []byte("/"))
+    if len(parts) < 2 || !bytes.Equal(parts[0], []byte("r")) {
+        return ""
+    }
+    return string(parts[1])
 }
 
 func CoordinationKey(id string) []byte {
@@ -249,96 +286,95 @@ func InputObjectKey() []byte {
    return []byte{inputPrefix}
 }
 
-func GetObject(
-   ctx context.Context,
-   im state.Immutable,
-   id string,
-) (map[string][]byte, error) {
-   k := ObjectKey(id)
-   v, err := im.GetValue(ctx, k)
-   if errors.Is(err, database.ErrNotFound) {
-       return nil, nil
-   }
-   if err != nil {
-       return nil, err
-   }
+func GetObject(ctx context.Context, im state.Immutable, id string, regionID string) (map[string][]byte, error) {
+    k := makeObjectKey(regionID, id) // Use new key function
+    v, err := im.GetValue(ctx, k)
+    if errors.Is(err, database.ErrNotFound) {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, err
+    }
 
-   var obj map[string][]byte
-   if err := unmarshalState(v, &obj); err != nil {
-       return nil, err
-   }
-   return obj, nil
+    var obj map[string][]byte
+    if err := unmarshalState(v, &obj); err != nil {
+        return nil, err
+    }
+    return obj, nil
 }
 
+
 func SetObject(
-   ctx context.Context,
-   mu state.Mutable,
-   id string,
-   obj map[string][]byte,
-   coordState *CoordinationState,
+    ctx context.Context,
+    mu state.Mutable,
+    id string,
+    obj map[string][]byte,
+    coordState *CoordinationState,
+    regionID string, // Add regionID parameter
 ) error {
-   k := ObjectKey(id)
-   v, err := marshalState(obj)
-   if err != nil {
-       return err
-   }
+    k := makeObjectKey(regionID, id) // Use new key function
+    v, err := marshalState(obj)
+    if err != nil {
+        return err
+    }
 
-   // Store object
-   if err := mu.Insert(ctx, k, v); err != nil {
-       return err
-   }
+    if err := mu.Insert(ctx, k, v); err != nil {
+        return err
+    }
 
-   // Update coordination state if provided
-   if coordState != nil {
-       if err := SetCoordinationState(ctx, mu, coordState); err != nil {
-           return err
-       }
-   }
+    if coordState != nil {
+        if err := SetCoordinationState(ctx, mu, coordState); err != nil {
+            return err
+        }
+    }
 
-   return nil
+    return nil
 }
 
 func QueueEvent(
-   ctx context.Context,
-   mu state.Mutable,
-   id string,
-   functionCall string,
-   parameters []byte,
-   attestations [2]core.TEEAttestation,
-   coordState *CoordinationState,
+    ctx context.Context,
+    mu state.Mutable,
+    id string,
+    functionCall string,
+    parameters []byte,
+    attestations [2]core.TEEAttestation,
+    coordState *CoordinationState,
+    regionID string, // Add regionID parameter
 ) error {
-   k := EventKey(attestations[0].Timestamp.Format(time.RFC3339), id)
-   event := map[string]interface{}{
-       "function_call": functionCall,
-       "parameters":    parameters,
-       "attestations": attestations,
-   }
-   v, err := marshalState(event)
-   if err != nil {
-       return err
-   }
+    timestamp := attestations[0].Timestamp.Format(time.RFC3339)
+    k := makeEventKey(regionID, timestamp, id) // Use new key function
+    
+    event := map[string]interface{}{
+        "function_call": functionCall,
+        "parameters":    parameters,
+        "attestations": attestations,
+    }
+    v, err := marshalState(event)
+    if err != nil {
+        return err
+    }
 
-   if err := mu.Insert(ctx, k, v); err != nil {
-       return err
-   }
+    if err := mu.Insert(ctx, k, v); err != nil {
+        return err
+    }
 
-   if coordState != nil {
-       taskID := fmt.Sprintf("event:%s:%s", id, attestations[0].Timestamp)
-       workers := []coordination.WorkerID{
-           coordination.WorkerID(attestations[0].EnclaveID),
-           coordination.WorkerID(attestations[1].EnclaveID),
-       }
-       attBytes := [][2][]byte{{
-           attestations[0].EnclaveID,
-           attestations[1].EnclaveID,
-       }}
-       
-       if err := UpdateTaskState(ctx, mu, taskID, "pending", workers, attBytes); err != nil {
-           return err
-       }
-   }
+    if coordState != nil {
+        taskID := fmt.Sprintf("event:%s:%s", id, attestations[0].Timestamp)
+        workers := []coordination.WorkerID{
+            coordination.WorkerID(attestations[0].EnclaveID),
+            coordination.WorkerID(attestations[1].EnclaveID),
+        }
+        attBytes := [][2][]byte{{
+            attestations[0].EnclaveID,
+            attestations[1].EnclaveID,
+        }}
+        
+        if err := UpdateTaskState(ctx, mu, taskID, "pending", workers, attBytes); err != nil {
+            return err
+        }
+    }
 
-   return nil
+    return nil
 }
 
 func GetEvent(

@@ -51,7 +51,12 @@ func (v *StateVerifier) VerifySystemState(ctx context.Context) error {
     if inputID == "" {
         return ErrInputObjectMissing
     }
-    inputObject, err := storage.GetObject(ctx, v.state, inputID)
+
+    // Since input objects are system-wide, use empty string as region ID
+    // Or if you have a specific system region, use that
+    systemRegionID := "" // or "system" depending on your architecture
+    
+    inputObject, err := storage.GetObject(ctx, v.state, inputID, systemRegionID)
     if err != nil {
         return err
     }
@@ -137,17 +142,13 @@ func (v *StateVerifier) VerifyStateTransition(ctx context.Context, action chain.
         return v.verifyEvent(ctx, a)
     case *actions.SetInputObjectAction:
         return v.verifySetInputObject(ctx, a)
-    case *actions.CreateRegionAction:
-        return v.verifyCreateRegion(ctx, a)
-    case *actions.UpdateRegionAction:
-        return v.verifyUpdateRegion(ctx, a)
     default:
         return fmt.Errorf("unknown action type: %T", action)
     }
 }
 
 func (v *StateVerifier) verifyCreateObject(ctx context.Context, action *actions.CreateObjectAction) error {
-    exists, err := storage.GetObject(ctx, v.state, action.ID)
+    exists, err := storage.GetObject(ctx, v.state, action.ID, action.RegionID)
     if err != nil {
         return err
     }
@@ -163,7 +164,7 @@ func (v *StateVerifier) verifyCreateObject(ctx context.Context, action *actions.
 }
 
 func (v *StateVerifier) verifyEvent(ctx context.Context, action *actions.SendEventAction) error {
-    targetObj, err := storage.GetObject(ctx, v.state, action.IDTo)
+    targetObj, err := storage.GetObject(ctx, v.state, action.IDTo, action.RegionID)
     if err != nil {
         return err
     }
@@ -172,8 +173,7 @@ func (v *StateVerifier) verifyEvent(ctx context.Context, action *actions.SendEve
     }
 
     // Get region for TEE verification
-    regionID := extractRegionFromID(action.IDTo)
-    region, err := storage.GetRegion(ctx, v.state, regionID)
+    region, err := storage.GetRegion(ctx, v.state, action.RegionID)
     if err != nil {
         return err
     }
@@ -198,7 +198,7 @@ func (v *StateVerifier) verifyEvent(ctx context.Context, action *actions.SendEve
 }
 
 func (v *StateVerifier) verifySetInputObject(ctx context.Context, action *actions.SetInputObjectAction) error {
-    obj, err := storage.GetObject(ctx, v.state, action.ID)
+    obj, err := storage.GetObject(ctx, v.state, action.ID, action.RegionID)
     if err != nil {
         return err
     }
@@ -207,6 +207,7 @@ func (v *StateVerifier) verifySetInputObject(ctx context.Context, action *action
     }
     return nil
 }
+
 
 func (v *StateVerifier) verifyCreateRegion(ctx context.Context, action *actions.CreateRegionAction) error {
     region, err := storage.GetRegion(ctx, v.state, action.RegionID)
