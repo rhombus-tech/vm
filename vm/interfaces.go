@@ -1,26 +1,35 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
-
+// vm/interfaces.go
 package vm
 
 import (
     "context"
-
     "github.com/ava-labs/hypersdk/chain"
+    "github.com/ava-labs/hypersdk/state"
     "github.com/rhombus-tech/vm/coordination"
+    "github.com/rhombus-tech/vm/core"
 )
 
-// StateManager extends the chain.StateManager interface to add coordination capabilities
 type StateManager interface {
     chain.StateManager
+    
+    // Object operations
+    GetObject(ctx context.Context, mu state.Mutable, id string, regionID string) (*core.ObjectState, error)
+    SetObject(ctx context.Context, mu state.Mutable, id string, obj *core.ObjectState) error
+    ObjectExists(ctx context.Context, mu state.Mutable, id string, regionID string) (bool, error)
+    
+    // Event operations
+    SetEvent(ctx context.Context, mu state.Mutable, id string, event *core.Event, regionID string) error
+    
+    // Region operations
+    GetRegion(ctx context.Context, mu state.Mutable, id string) (map[string]interface{}, error)
+    SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error
+    RegionExists(ctx context.Context, mu state.Mutable, id string) (bool, error)
+    
+    // Input object operations
+    SetInputObject(ctx context.Context, mu state.Mutable, id string) error
 
-    // GetCoordinator returns the coordinator instance for managing regional execution
+    // Coordination
     GetCoordinator() *coordination.Coordinator
-
-    // Region-related methods
-    GetRegion(ctx context.Context, regionID string) (*RegionConfig, error)
-    ListRegions(ctx context.Context) ([]RegionConfig, error)
-    ValidateRegion(ctx context.Context, regionID string) error
 }
 
 // VM extends the chain.VM interface to add coordination capabilities
