@@ -3,18 +3,18 @@
 package vm
 
 import (
-    "context"
-    "fmt"
-    "sync"
+	"context"
+	"fmt"
+	"sync"
 
-    "github.com/ava-labs/avalanchego/ids"
-    "github.com/ava-labs/avalanchego/utils/wrappers"
-    "github.com/ava-labs/hypersdk/auth"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    sdkvm "github.com/ava-labs/hypersdk/vm"
+	"github.com/ava-labs/avalanchego/utils/wrappers"
+	"github.com/ava-labs/hypersdk/auth"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	sdkvm "github.com/ava-labs/hypersdk/vm"
 
-    "github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/verifier"
 )
 
 var (
@@ -49,6 +49,9 @@ func init() {
         OutputParser.Register(&actions.CreateObjectResult{}, nil),
         OutputParser.Register(&actions.SendEventResult{}, nil),
         OutputParser.Register(&actions.SetInputObjectResult{}, nil),
+
+        ActionParser.Register(&actions.UpdateValidEnclavesAction{}, nil),
+        OutputParser.Register(&actions.UpdateValidEnclavesResult{}, nil),
     )
     if errs.Errored() {
         panic(errs.Err)

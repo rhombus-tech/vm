@@ -4,6 +4,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -24,12 +25,80 @@ var (
     ErrInvalidRegionID = errors.New("invalid region ID")
 )
 
+const (
+    validEnclavesPrefix = "valid_enclaves/"
+    regionMeasurementsPrefix = "region_measurements/"
+)
+
+type EnclaveInfo struct {
+    Measurement []byte    `json:"measurement"`
+    ValidFrom   time.Time `json:"valid_from"`
+    ValidUntil  time.Time `json:"valid_until"`
+    EnclaveType string    `json:"enclave_type"` // "SGX" or "SEV"
+    RegionID    string    `json:"region_id"`
+}
+
 // StateManager wraps lower-level storage operations
 type StateManager struct {
     backingStore state.Mutable
     coordinator  *coordination.Coordinator
     regionStores map[string]state.Mutable
     regionMu     sync.RWMutex
+}
+
+func (s *StateManager) GetValidEnclave(
+    ctx context.Context, 
+    mu state.Mutable,
+    enclaveID []byte,
+) (*EnclaveInfo, error) {
+    key := append([]byte(validEnclavesPrefix), enclaveID...)
+    value, err := mu.GetValue(ctx, key)
+    if err != nil {
+        if errors.Is(err, database.ErrNotFound) {
+            return nil, nil
+        }
+        return nil, err
+    }
+
+    var info EnclaveInfo
+    if err := json.Unmarshal(value, &info); err != nil {
+        return nil, err
+    }
+    return &info, nil
+}
+
+func (s *StateManager) SetValidEnclave(
+    ctx context.Context,
+    mu state.Mutable,
+    enclaveID []byte,
+    info *EnclaveInfo,
+) error {
+    value, err := json.Marshal(info)
+    if err != nil {
+        return err
+    }
+    
+    key := append([]byte(validEnclavesPrefix), enclaveID...)
+    return mu.Insert(ctx, key, value)
+}
+
+func (s *StateManager) GetRegionMeasurement(
+    ctx context.Context,
+    mu state.Mutable,
+    regionID string,
+) ([]byte, error) {
+    key := append([]byte(regionMeasurementsPrefix), []byte(regionID)...)
+    return mu.GetValue(ctx, key)
+}
+
+func (s *StateManager) SetRegionMeasurement(
+    ctx context.Context,
+    mu state.Mutable,
+    regionID string,
+    measurement []byte,
+) error {
+    key := append([]byte(regionMeasurementsPrefix), []byte(regionID)...)
+    return mu.Insert(ctx, key, measurement)
 }
 
 // Add region-aware key creation

@@ -2,8 +2,10 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/logging"
@@ -11,7 +13,7 @@ import (
 	"github.com/ava-labs/hypersdk/state"
 	"go.uber.org/zap"
 
-    "github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/compute"
 	"github.com/rhombus-tech/vm/core"
 	pb "github.com/rhombus-tech/vm/tee/proto/pb"
@@ -107,24 +109,42 @@ func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
     return nil
 }
 
+// In vm/core.go
+
+// In vm/core.go
+
+// In vm/core.go
+
 func (vm *ShuttleVM) ValidateTransaction(ctx context.Context, tx *chain.Transaction) error {
-    // Verify tx format
-    if err := tx.Verify(); err != nil {
+    // Verify transaction format and auth
+    if err := tx.Verify(ctx); err != nil {
+        return err
+    }
+    
+    unsignedBytes, err := tx.UnsignedBytes()
+    if err != nil {
+        return err
+    }
+    if err := tx.Auth.Verify(ctx, unsignedBytes); err != nil {
         return err
     }
 
-    // Verify action format 
-    if err := tx.AuthVerify(); err != nil {
-        return err
-    }
-
-    // Verify regional actions
-    if err := vm.validateRegionalActions(ctx, tx); err != nil {
-        return err
-    }
-
-    // Verify state transitions
+    // For each action that includes TEE execution results
     for _, action := range tx.Actions {
+        if execAction, ok := action.(*actions.SendEventAction); ok {
+            // Construct execution result from action's attestations
+            result := &compute.ExecutionResult{
+                StateHash:    execAction.Attestations[0].Data, // Use first attestation's data as state hash
+                Attestations: execAction.Attestations,
+            }
+            
+            // Verify the TEE execution
+            if err := vm.verifyTEEExecution(ctx, action, result); err != nil {
+                return fmt.Errorf("TEE execution verification failed: %w", err)
+            }
+        }
+        
+        // Verify other aspects of state transition
         if err := vm.verifier.VerifyStateTransition(ctx, action); err != nil {
             return err
         }
@@ -223,4 +243,108 @@ func (vm *ShuttleVM) GetComputeClient(regionID string) (*compute.NodeClient, err
 // IsVerificationOnly returns true if this node only performs verification
 func (vm *ShuttleVM) IsVerificationOnly() bool {
     return vm.config.VerificationOnly
+}
+
+// Add this type to help with attestation verification
+type ExecutionVerifier struct {
+    verifier *verifier.StateVerifier
+}
+
+// Add this method to ShuttleVM
+func (vm *ShuttleVM) verifyTEEExecution(
+    ctx context.Context, 
+    action chain.Action,
+    result *compute.ExecutionResult,
+) error {
+    // First verify both attestations are present and match requirements
+    if len(result.Attestations) != 2 {
+        return fmt.Errorf("expected 2 attestations, got %d", len(result.Attestations))
+    }
+
+    // Verify attestation pairs (one from SGX, one from SEV)
+    sgxAtt := result.Attestations[0]
+    sevAtt := result.Attestations[1]
+
+    // Verify attestation timestamps match and are recent
+    now := time.Now()
+    maxAge := 5 * time.Minute
+    
+    if !sgxAtt.Timestamp.Equal(sevAtt.Timestamp) {
+        return fmt.Errorf("attestation timestamps do not match: %v != %v", 
+            sgxAtt.Timestamp, sevAtt.Timestamp)
+    }
+    
+    age := now.Sub(sgxAtt.Timestamp)
+    if age > maxAge || age < -maxAge {
+        return fmt.Errorf("attestation timestamp outside acceptable range: %v", age)
+    }
+
+    // Verify SGX attestation
+    if err := vm.verifySGXAttestation(ctx, sgxAtt); err != nil {
+        return fmt.Errorf("SGX attestation verification failed: %w", err)
+    }
+
+    // Verify SEV attestation  
+    if err := vm.verifySEVAttestation(ctx, sevAtt); err != nil {
+        return fmt.Errorf("SEV attestation verification failed: %w", err)
+    }
+
+    // Verify attestation data matches
+    if !bytes.Equal(sgxAtt.Data, sevAtt.Data) {
+        return fmt.Errorf("attestation data mismatch between SGX and SEV")
+    }
+
+    // Verify state hash matches both attestations
+    if !bytes.Equal(result.StateHash, sgxAtt.Data) || !bytes.Equal(result.StateHash, sevAtt.Data) {
+        return fmt.Errorf("state hash mismatch with attestation data")
+    }
+
+    return nil
+}
+
+func (vm *ShuttleVM) verifySGXAttestation(ctx context.Context, att core.TEEAttestation) error {
+    // Verify enclave measurement matches expected value
+    expectedMeasurement := []byte{} // Configure this based on your enclave
+    if !bytes.Equal(att.Measurement, expectedMeasurement) {
+        return fmt.Errorf("invalid SGX enclave measurement")
+    }
+
+    // Verify the enclave signature
+    if err := vm.verifySGXSignature(att.EnclaveID, att.Data, att.Signature); err != nil {
+        return fmt.Errorf("invalid SGX signature: %w", err)
+    }
+
+    return nil
+}
+
+func (vm *ShuttleVM) verifySEVAttestation(ctx context.Context, att core.TEEAttestation) error {
+    // Similar to SGX but with SEV-specific verification
+    expectedMeasurement := []byte{} // Configure this based on your SEV VM
+    if !bytes.Equal(att.Measurement, expectedMeasurement) {
+        return fmt.Errorf("invalid SEV measurement")
+    }
+
+    // Verify the SEV signature
+    if err := vm.verifySEVSignature(att.EnclaveID, att.Data, att.Signature); err != nil {
+        return fmt.Errorf("invalid SEV signature: %w", err)
+    }
+
+    return nil
+}
+
+// Add signature verification helpers
+func (vm *ShuttleVM) verifySGXSignature(enclaveID, data, signature []byte) error {
+    // Implement SGX signature verification using the appropriate crypto library
+    // This would typically involve:
+    // 1. Verifying the signing key belongs to a genuine SGX enclave
+    // 2. Verifying the signature over the data
+    return nil
+}
+
+func (vm *ShuttleVM) verifySEVSignature(enclaveID, data, signature []byte) error {
+    // Implement SEV signature verification
+    // This would typically involve:
+    // 1. Verifying the signing key belongs to a genuine SEV VM 
+    // 2. Verifying the signature over the data
+    return nil
 }

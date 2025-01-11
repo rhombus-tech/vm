@@ -19,6 +19,8 @@ const (
     // New TEE-related IDs
     ExecutionResultID         uint8 = 13
     AttestationReportID      uint8 = 14
+    UpdateValidEnclavesID    uint8 = 15  
+    UpdateValidEnclavesResultID uint8 = 16
 )
 
 var (
