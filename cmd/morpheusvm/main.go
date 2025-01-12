@@ -1,6 +1,4 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
-
+// cmd/morpheusvm/main.go
 package main
 
 import (
@@ -19,28 +17,23 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:        "morpheusvm",
-	Short:      "BaseVM agent",
-	SuggestFor: []string{"morpheusvm"},
-	RunE:       runFunc,
+    Use:        "morpheusvm",
+    Short:      "BaseVM agent",
+    SuggestFor: []string{"morpheusvm"},
+    RunE:       runFunc,
 }
 
 func init() {
-	cobra.EnablePrefixMatching = true
-}
-
-func init() {
-	rootCmd.AddCommand(
-		version.NewCommand(),
-	)
+    cobra.EnablePrefixMatching = true
+    rootCmd.AddCommand(version.NewCommand())
 }
 
 func main() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "morpheusvm failed %v\n", err)
-		os.Exit(1)
-	}
-	os.Exit(0)
+    if err := rootCmd.Execute(); err != nil {
+        fmt.Fprintf(os.Stderr, "morpheusvm failed %v\n", err)
+        os.Exit(1)
+    }
+    os.Exit(0)
 }
 
 func runFunc(*cobra.Command, []string) error {
@@ -48,25 +41,35 @@ func runFunc(*cobra.Command, []string) error {
         return fmt.Errorf("%w: failed to set fd limit", err)
     }
 
+    logFactory := logging.NewFactory(logging.Config{
+        DisplayLevel: logging.Info,
+        LogLevel:     logging.Info,
+    })
+    log, err := logFactory.Make("morpheusvm")
+    if err != nil {
+        return fmt.Errorf("failed to create logger: %w", err)
+    }
+
     vmConfig := &vm.Config{
         NetworkID: 0,
-        Regions: []vm.RegionConfig{},
+        Regions:   []vm.RegionConfig{},
     }
     
-    // Add TEE configuration from env
     if teeEndpoint := os.Getenv("TEE_ENDPOINT"); teeEndpoint != "" {
         vmConfig.ComputeNodeEndpoints = map[string]compute.NodeClientConfig{
             "default": {
-                Endpoint: teeEndpoint,
+                Endpoint:       teeEndpoint,
                 ControllerPath: os.Getenv("TEE_CONTROLLER_PATH"),
-                WasmPath: os.Getenv("TEE_WASM_PATH"),
+                WasmPath:      os.Getenv("TEE_WASM_PATH"),
             },
         }
     }
 
-    vm, err := vm.New(vmConfig)
+    ctx := context.Background()
+    shuttleVM, err := vm.New(ctx, vmConfig, log)
     if err != nil {
         return err
     }
-    return rpcchainvm.Serve(context.TODO(), vm)
+
+    return rpcchainvm.Serve(ctx, shuttleVM)
 }

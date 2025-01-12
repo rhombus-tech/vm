@@ -5,9 +5,15 @@ package vm
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
+	"time"
 
+	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/snow"
+    "github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/wrappers"
+	"github.com/ava-labs/avalanchego/version"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
@@ -133,4 +139,60 @@ func With(name string, defaultValue interface{}) sdkvm.Option {
             return nil
         },
     )
+}
+
+type StateSyncableVM interface {
+    StateSync() error
+}
+// Make sure we implement the StateSyncableVM interface
+var _ common.StateSyncableVM = &ShuttleVM{}
+
+// Add StateSyncableVM methods
+func (vm *ShuttleVM) StateSyncEnabled(ctx context.Context) (bool, error) {
+    return true, nil
+}
+
+func (vm *ShuttleVM) GetStateSummary(ctx context.Context) ([]byte, error) {
+    return nil, nil
+}
+
+func (vm *ShuttleVM) ParseStateSummary(ctx context.Context, summaryBytes []byte) (common.StateSummary, error) {
+    return nil, nil
+}
+
+
+func (vm *ShuttleVM) Connected(ctx context.Context, nodeID ids.NodeID, version *version.Application) error {
+    return nil
+}
+
+func (vm *ShuttleVM) Disconnected(ctx context.Context, nodeID ids.NodeID) error {
+    return nil
+}
+
+func (vm *ShuttleVM) AppRequest(ctx context.Context, nodeID ids.NodeID, requestID uint32, deadline time.Time, request []byte) error {
+    return nil
+}
+
+func (vm *ShuttleVM) AppResponse(ctx context.Context, nodeID ids.NodeID, requestID uint32, response []byte) error {
+    return nil
+}
+
+func (vm *ShuttleVM) AppRequestFailed(ctx context.Context, nodeID ids.NodeID, requestID uint32, err *common.AppError) error {
+    return nil
+}
+
+func (vm *ShuttleVM) AppGossip(ctx context.Context, nodeID ids.NodeID, msg []byte) error {
+    return nil
+}
+
+func (vm *ShuttleVM) Version(context.Context) (string, error) {
+    return "0.0.1", nil
+}
+
+func (vm *ShuttleVM) CreateHandlers(context.Context) (map[string]http.Handler, error) {
+    return map[string]http.Handler{}, nil
+}
+
+func (vm *ShuttleVM) CreateStaticHandlers(context.Context) (map[string]http.Handler, error) {
+    return map[string]http.Handler{}, nil
 }
