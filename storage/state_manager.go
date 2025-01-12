@@ -478,6 +478,39 @@ func extractRegionID(key []byte) string {
     return string(parts[1])
 }
 
+type DatabaseWrapper struct {
+    db database.Database
+}
+
+func NewDatabaseWrapper(db database.Database) *DatabaseWrapper {
+    return &DatabaseWrapper{db: db}
+}
+
+func (d *DatabaseWrapper) GetValue(ctx context.Context, key []byte) ([]byte, error) {
+    return d.db.Get(key)
+}
+
+func (d *DatabaseWrapper) Insert(ctx context.Context, key []byte, value []byte) error {
+    return d.db.Put(key, value)
+}
+
+func (d *DatabaseWrapper) Remove(ctx context.Context, key []byte) error {
+    return d.db.Delete(key)
+}
+
+
+
+
+func (s *StateManager) DeleteRegion(ctx context.Context, id string) error {
+    s.regionMu.Lock()
+    defer s.regionMu.Unlock()
+    delete(s.regionStores, id)
+    // Also remove from backing store
+    key := []byte(fmt.Sprintf("region/%s", id))
+    return s.backingStore.Remove(ctx, key)
+}
+
+
 // Verify StateManager implements all required interfaces
 var (
     _ chain.StateManager = (*StateManager)(nil)
