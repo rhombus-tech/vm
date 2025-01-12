@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ava-labs/avalanchego/database"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/logging"
 	"github.com/ava-labs/hypersdk/chain"
@@ -31,6 +32,7 @@ type ShuttleVM struct {
     codeValidator *CodeValidator                 
     teeValidator  *Validator
     validatorMgr *validatorManager
+    db database.Database
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
@@ -109,11 +111,7 @@ func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
     return nil
 }
 
-// In vm/core.go
 
-// In vm/core.go
-
-// In vm/core.go
 
 func (vm *ShuttleVM) ValidateTransaction(ctx context.Context, tx *chain.Transaction) error {
     // Verify transaction format and auth

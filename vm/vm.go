@@ -9,9 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ava-labs/avalanchego/database"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow"
-    "github.com/ava-labs/avalanchego/snow/engine/common"
+	"github.com/ava-labs/avalanchego/snow/consensus/snowman"
+	"github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/wrappers"
 	"github.com/ava-labs/avalanchego/version"
 	"github.com/ava-labs/hypersdk/auth"
@@ -141,26 +143,25 @@ func With(name string, defaultValue interface{}) sdkvm.Option {
     )
 }
 
+
 type StateSyncableVM interface {
     StateSync() error
 }
-// Make sure we implement the StateSyncableVM interface
-var _ common.StateSyncableVM = &ShuttleVM{}
 
-// Add StateSyncableVM methods
-func (vm *ShuttleVM) StateSyncEnabled(ctx context.Context) (bool, error) {
-    return true, nil
+var _ StateSyncableVM = &ShuttleVM{}
+
+// Add the single required method
+func (vm *ShuttleVM) StateSync() error {
+    return nil
 }
 
-func (vm *ShuttleVM) GetStateSummary(ctx context.Context) ([]byte, error) {
-    return nil, nil
-}
+// You can remove these since they're not part of the interface:
+// - StateSyncEnabled
+// - GetStateSummary
+// - ParseStateSummary
+// - StateSummary struct and its methods
 
-func (vm *ShuttleVM) ParseStateSummary(ctx context.Context, summaryBytes []byte) (common.StateSummary, error) {
-    return nil, nil
-}
-
-
+// Keep all these other methods as they're likely part of other interfaces:
 func (vm *ShuttleVM) Connected(ctx context.Context, nodeID ids.NodeID, version *version.Application) error {
     return nil
 }
@@ -195,4 +196,61 @@ func (vm *ShuttleVM) CreateHandlers(context.Context) (map[string]http.Handler, e
 
 func (vm *ShuttleVM) CreateStaticHandlers(context.Context) (map[string]http.Handler, error) {
     return map[string]http.Handler{}, nil
+}
+
+// Block represents a basic block without snowman consensus 
+type Block struct {
+    id        ids.ID
+    timestamp time.Time
+}
+
+func (vm *ShuttleVM) BuildBlock(ctx context.Context) (snowman.Block, error) {
+    return nil, fmt.Errorf("not implemented: BuildBlock")
+}
+
+func (vm *ShuttleVM) GetBlockIDAtHeight(ctx context.Context, height uint64) (ids.ID, error) {
+    select {
+    case <-ctx.Done():
+        return ids.Empty, ctx.Err()
+    default:
+    }
+
+    heightKey := []byte(fmt.Sprintf("height-%d", height))
+    blockIDBytes, err := vm.db.Get(heightKey)
+    if err == database.ErrNotFound {
+        return ids.Empty, database.ErrNotFound
+    }
+    if err != nil {
+        return ids.Empty, err
+    }
+
+    return ids.ToID(blockIDBytes)
+}
+
+func (vm *ShuttleVM) SetState(context.Context, snow.State) error {
+    return nil
+}
+
+func (vm *ShuttleVM) LastAccepted(context.Context) (ids.ID, error) {
+    return ids.Empty, nil
+}
+
+func (vm *ShuttleVM) GetBlock(context.Context, ids.ID) (snowman.Block, error) {
+    return nil, fmt.Errorf("not implemented: GetBlock")
+}
+
+func (vm *ShuttleVM) ParseBlock(context.Context, []byte) (snowman.Block, error) {
+    return nil, fmt.Errorf("not implemented: ParseBlock") 
+}
+
+func (vm *ShuttleVM) SetPreference(context.Context, ids.ID) error {
+    return nil
+}
+
+func (vm *ShuttleVM) HealthCheck(context.Context) (interface{}, error) {
+    // Basic health response
+    health := map[string]interface{}{
+        "healthy": true,
+    }
+    return health, nil
 }
