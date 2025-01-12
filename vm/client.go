@@ -23,13 +23,22 @@ import (
 const balanceCheckInterval = 500 * time.Millisecond
 
 type JSONRPCClient struct {
-	requester *requester.EndpointRequester
-	g         *genesis.DefaultGenesis
-	regionTEEs map[string]struct {
+    requester *requester.EndpointRequester
+    g         *genesis.DefaultGenesis
+    regionTEEs map[string]struct {
         sgxClient pb.TeeExecutionClient
         sevClient pb.TeeExecutionClient
+    }
 }
+
+type RegionResponse struct {
+    ID                string   `json:"id"`
+    CreatedAt         string   `json:"created_at"`
+    WorkerIds         []string `json:"worker_ids"`
+    SupportedTeeTypes []string `json:"supported_tee_types"`
+    MaxTasks         uint32   `json:"max_tasks"`
 }
+
 
 // NewJSONRPCClient creates a new client object.
 func NewJSONRPCClient(uri string) *JSONRPCClient {
@@ -152,9 +161,9 @@ func CreateParser(genesisBytes []byte) (chain.Parser, error) {
 func (cli *JSONRPCClient) GetRegionAttestations(
     ctx context.Context,
     regionID string,
-) (*pb.RegionAttestations, error) {
+) ([]*pb.TEEAttestation, error) {
     resp := new(struct {
-        Attestations *pb.RegionAttestations `json:"attestations"`
+        Attestations []*pb.TEEAttestation `json:"attestations"`
     })
     err := cli.requester.SendRequest(
         ctx,
@@ -171,15 +180,13 @@ func (cli *JSONRPCClient) GetRegionAttestations(
 
 func (cli *JSONRPCClient) GetRegions(
     ctx context.Context,
-) ([]*pb.Region, error) {
-    resp := new(struct {
-        Regions []*pb.Region `json:"regions"` 
-    })
+) (*pb.GetRegionsResponse, error) {  // Changed return type
+    resp := new(pb.GetRegionsResponse)
     err := cli.requester.SendRequest(
         ctx,
         "region.list",
         nil,
         resp,
     )
-    return resp.Regions, err
+    return resp, err
 }
