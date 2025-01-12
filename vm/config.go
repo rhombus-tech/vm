@@ -19,6 +19,7 @@ type Config struct {
     Regions             []RegionConfig      `json:"regions"`
     MaxCodeSize uint64 `json:"max_code_size"`
 }
+
 func DefaultConfig() *Config {
     return &Config{
         NetworkID: 0,
