@@ -3,18 +3,22 @@
 package throughput
 
 import (
-   "context"
-   "github.com/rhombus-tech/vm/actions"
-   "github.com/rhombus-tech/vm"
-   "github.com/ava-labs/hypersdk/api/ws"
-   "github.com/ava-labs/hypersdk/auth"
-   "github.com/ava-labs/hypersdk/chain"
-   "github.com/ava-labs/hypersdk/codec"
-   "github.com/ava-labs/hypersdk/pubsub"
-   "github.com/ava-labs/hypersdk/throughput"
-   "github.com/cloudflare/roughtime"
-   mauth "github.com/rhombus-tech/vm/auth"
+	"context"
+	"time"
+
+	"github.com/ava-labs/hypersdk/api/ws"
+	"github.com/ava-labs/hypersdk/auth"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/crypto/ed25519"
+	"github.com/ava-labs/hypersdk/pubsub"
+	"github.com/ava-labs/hypersdk/throughput"
+
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/vm"
 )
+
 
 type SpamHelper struct {
    KeyType     string
@@ -27,7 +31,30 @@ type SpamHelper struct {
 var _ throughput.SpamHelper = &SpamHelper{}
 
 func (sh *SpamHelper) CreateAccount() (*auth.PrivateKey, error) {
-   return mauth.GeneratePrivateKey(sh.KeyType)
+   var priv auth.PrivateKey
+   switch sh.KeyType {
+   case "ed25519":
+       p, err := ed25519.GeneratePrivateKey()
+       if err != nil {
+           return nil, err
+       }
+       priv = auth.PrivateKey{
+           Address: auth.NewED25519Address(p.PublicKey()),
+           Bytes:   p[:],
+       }
+   // Add other key types here if needed
+   default:
+       // Default to ed25519
+       p, err := ed25519.GeneratePrivateKey()
+       if err != nil {
+           return nil, err
+       }
+       priv = auth.PrivateKey{
+           Address: auth.NewED25519Address(p.PublicKey()),
+           Bytes:   p[:],
+       }
+   }
+   return &priv, nil
 }
 
 func (sh *SpamHelper) CreateClient(uri string) error {
@@ -53,11 +80,11 @@ func (sh *SpamHelper) LookupBalance(address codec.Address) (uint64, error) {
 }
 
 // CreateTestAttestation creates a test attestation for throughput testing
-func (sh *SpamHelper) CreateTestAttestation(data []byte) [2]actions.TEEAttestation {
-   timestamp := roughtime.Now()
+func (sh *SpamHelper) CreateTestAttestation(data []byte) [2]core.TEEAttestation {
+   timestamp := time.Now().UTC()  // Use time.Now() instead of roughtime.Now()
    teePair := sh.teePairs[sh.RegionID]
 
-   return [2]actions.TEEAttestation{
+   return [2]core.TEEAttestation{
        {
            EnclaveID:   teePair[0],
            Measurement: []byte("test-measurement-1"),
@@ -83,6 +110,7 @@ func (sh *SpamHelper) GetRegionalEvent(targetID string, functionCall string, par
        FunctionCall: functionCall,
        Parameters:   params,
        Attestations: attestations,
+       RegionID:     sh.RegionID,
    }}
 }
 

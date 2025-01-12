@@ -9,7 +9,7 @@ import (
 	"github.com/ava-labs/avalanchego/ids"
 
 	"github.com/rhombus-tech/vm/consts"
-	"github.com/rhombus-tech/vm"
+	"github.com/rhombus-tech/vm/vm"
 	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/api/ws"
 	"github.com/ava-labs/hypersdk/auth"

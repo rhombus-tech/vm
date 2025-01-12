@@ -86,21 +86,21 @@ func listRegions(_ *cobra.Command, _ []string) error {
     }
 
     // Get regions from VM
-    regions, err := bcli.GetRegions(ctx)
+    resp, err := bcli.GetRegions(ctx)
     if err != nil {
         return err
     }
 
-    if len(regions) == 0 {
+    if len(resp.Regions) == 0 {
         utils.Outf("{{yellow}}no regions found{{/}}\n")
         return nil
     }
 
     utils.Outf("{{cyan}}Regions:{{/}}\n")
-    for _, region := range regions {
-        utils.Outf("- ID: %s\n", region.ID)
+    for _, region := range resp.Regions {
+        utils.Outf("- ID: %s\n", region.Id)  // Note: field might be 'Id' not 'ID'
         utils.Outf("  Created: %s\n", region.CreatedAt)
-        utils.Outf("  Worker Count: %d\n", len(region.Workers))
+        utils.Outf("  Worker Count: %d\n", len(region.WorkerIds))  // Note: field might be 'WorkerIds'
     }
 
     return nil
@@ -193,20 +193,26 @@ func getAttestations(_ *cobra.Command, args []string) error {
         return err
     }
 
-    // Display attestations...
-    return nil
-}
-
     utils.Outf("{{cyan}}Region Attestations:{{/}}\n")
-    utils.Outf("SGX Attestation:\n")
-    utils.Outf("  EnclaveID: %x\n", attestations.SGX.EnclaveID)
-    utils.Outf("  Measurement: %x\n", attestations.SGX.Measurement)
-    utils.Outf("  Timestamp: %s\n", attestations.SGX.Timestamp)
+    
+    if len(attestations) >= 2 {
+        // First attestation is SGX
+        utils.Outf("SGX Attestation:\n")
+        utils.Outf("  EnclaveID: %x\n", attestations[0].EnclaveId)
+        utils.Outf("  Measurement: %x\n", attestations[0].Measurement)
+        utils.Outf("  Timestamp: %s\n", attestations[0].Timestamp)
 
-    utils.Outf("\nSEV Attestation:\n")
-    utils.Outf("  EnclaveID: %x\n", attestations.SEV.EnclaveID) 
-    utils.Outf("  Measurement: %x\n", attestations.SEV.Measurement)
-    utils.Outf("  Timestamp: %s\n", attestations.SEV.Timestamp)
-
+        // Second attestation is SEV
+        utils.Outf("\nSEV Attestation:\n")
+        utils.Outf("  EnclaveID: %x\n", attestations[1].EnclaveId)
+        utils.Outf("  Measurement: %x\n", attestations[1].Measurement)
+        utils.Outf("  Timestamp: %s\n", attestations[1].Timestamp)
+    } else {
+        utils.Outf("{{yellow}}insufficient attestations found{{/}}\n")
+    }
+    
     return nil
 }
+
+
+

@@ -74,4 +74,3 @@ message RegionAttestations {
 message GetAttestationsRequest {
     string region_id = 1;
 }
-

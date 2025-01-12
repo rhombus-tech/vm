@@ -17,7 +17,7 @@ import (
 	"github.com/ava-labs/hypersdk/utils"
 	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/storage"
-	pb "github.com/rhombus-tech/vm/tee/proto/pb"
+	pb "github.com/rhombus-tech/vm/tee/proto"
 )
 
 const balanceCheckInterval = 500 * time.Millisecond

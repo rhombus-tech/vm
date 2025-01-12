@@ -41,8 +41,10 @@ type CreateRegionAction struct {
 }
 
 type UpdateRegionAction struct {
-    RegionID     string
-    Attestations [2]core.TEEAttestation
+    RegionID     string                  `serialize:"true" json:"region_id"`
+    SGXEndpoint  string                  `serialize:"true" json:"sgx_endpoint"`
+    SEVEndpoint  string                  `serialize:"true" json:"sev_endpoint"`
+    Attestations [2]core.TEEAttestation  `serialize:"true" json:"attestations"`
 }
 
 type CreateRegionResult struct {
@@ -213,26 +215,28 @@ func (u *UpdateRegionAction) Execute(
         return nil, errors.New("region not found")
     }
 
-    // If region["tees"] is relevant, we are not updating it because we have no Add/Rem TEEs.
+    // 5) Update endpoints if provided
+    if u.SGXEndpoint != "" {
+        region["sgx_endpoint"] = u.SGXEndpoint
+    }
+    if u.SEVEndpoint != "" {
+        region["sev_endpoint"] = u.SEVEndpoint
+    }
 
-    // 5) Overwrite or store new attestation data
+    // 6) Update attestation data
     region["attestations"] = u.Attestations
-    // If TEEAttestation.Timestamp is a time.Time, we can do .Format(...)
-    // or if it’s a uint64 of epoch seconds, we can convert it to time.Time.
     region["last_updated"] = time.Now().UTC().Format(time.RFC3339)
 
-    // 6) Save updated region map
+    // 7) Save updated region map
     if err := stateManager.SetRegion(ctx, mu, u.RegionID, region); err != nil {
         return nil, err
     }
 
-    // 7) Return a typed result
-    //   If you want a “state hash” from the attestation, you might store
-    //   something like [u.Attestations[0].Data] or similar in StateHash.
+    // 8) Return a typed result
     return &UpdateRegionResult{
         RegionID:  u.RegionID,
         Success:   true,
-        StateHash: u.Attestations[0].Data, // or any relevant bytes
+        StateHash: u.Attestations[0].Data,
         Timestamp: time.Now().UTC().Format(time.RFC3339),
     }, nil
 }
