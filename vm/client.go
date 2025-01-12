@@ -148,3 +148,38 @@ func CreateParser(genesisBytes []byte) (chain.Parser, error) {
 	}
 	return NewParser(&genesis), nil
 }
+
+func (cli *JSONRPCClient) GetRegionAttestations(
+    ctx context.Context,
+    regionID string,
+) (*pb.RegionAttestations, error) {
+    resp := new(struct {
+        Attestations *pb.RegionAttestations `json:"attestations"`
+    })
+    err := cli.requester.SendRequest(
+        ctx,
+        "region.attestations",
+        &struct {
+            RegionID string `json:"region_id"`
+        }{
+            RegionID: regionID,
+        },
+        resp,
+    )
+    return resp.Attestations, err
+}
+
+func (cli *JSONRPCClient) GetRegions(
+    ctx context.Context,
+) ([]*pb.Region, error) {
+    resp := new(struct {
+        Regions []*pb.Region `json:"regions"` 
+    })
+    err := cli.requester.SendRequest(
+        ctx,
+        "region.list",
+        nil,
+        resp,
+    )
+    return resp.Regions, err
+}

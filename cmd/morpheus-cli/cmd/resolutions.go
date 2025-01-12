@@ -7,16 +7,18 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
 
-	"github.com/rhombus-tech/vm/actions"
-	"github.com/rhombus-tech/vm/consts"
-	"github.com/rhombus-tech/vm"
 	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/api/ws"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/utils"
+	"github.com/rhombus-tech/vm"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/core"
 )
 
 // sendAndWait may not be used concurrently
@@ -79,12 +81,25 @@ func handleTx(tx *chain.Transaction, result *chain.Result) {
 
 	for _, action := range tx.Actions {
 		var summaryStr string
-		switch act := action.(type) { //nolint:gocritic
+		switch act := action.(type) {
 		case *actions.Transfer:
-			summaryStr = fmt.Sprintf("%s %s -> %s\n", utils.FormatBalance(act.Value), consts.Symbol, actor)
+			summaryStr = fmt.Sprintf("%s %s -> %s", utils.FormatBalance(act.Value), consts.Symbol, actor)
+		case *actions.CreateRegionAction:
+			summaryStr = fmt.Sprintf("Created region %s with %d TEEs", act.RegionID, len(act.TEEs))
+		case *actions.UpdateRegionAction:
+			summaryStr = fmt.Sprintf("Updated region %s attestations", act.RegionID)
+		case *actions.SendEventAction:
+			summaryStr = fmt.Sprintf("Event %s -> %s in region %s", act.FunctionCall, act.IDTo, act.RegionID)
+		case *actions.CreateObjectAction:
+			summaryStr = fmt.Sprintf("Created object %s in region %s", act.ID, act.RegionID)
+		case *actions.SetInputObjectAction:
+			summaryStr = fmt.Sprintf("Set input object %s in region %s", act.ID, act.RegionID)
+		default:
+			summaryStr = fmt.Sprintf("Unknown action type: %T", act)
 		}
+
 		utils.Outf(
-			"%s {{yellow}}%s{{/}} {{yellow}}actor:{{/}} %s {{yellow}}summary (%s):{{/}} [%s] {{yellow}}fee (max %.2f%%):{{/}} %s %s {{yellow}}consumed:{{/}} [%s]\n",
+			"%s {{yellow}}%s{{/}} {{yellow}}actor:{{/}} %s {{yellow}}summary (%s):{{/}} %s {{yellow}}fee (max %.2f%%):{{/}} %s %s {{yellow}}consumed:{{/}} [%s]\n",
 			"✅",
 			tx.ID(),
 			actor,
@@ -95,5 +110,23 @@ func handleTx(tx *chain.Transaction, result *chain.Result) {
 			consts.Symbol,
 			result.Units,
 		)
+
+		// Add detailed attestation info for relevant actions
+		if teeAction, ok := action.(interface{ GetAttestations() [2]core.TEEAttestation }); ok {
+			attestations := teeAction.GetAttestations()
+			utils.Outf("{{cyan}}Attestations:{{/}}\n")
+			
+			for i, att := range attestations {
+				teeType := "SGX"
+				if i == 1 {
+					teeType = "SEV"
+				}
+				utils.Outf("  %s:\n", teeType)
+				utils.Outf("    EnclaveID: %x\n", att.EnclaveID)
+				utils.Outf("    Measurement: %x\n", att.Measurement)
+				utils.Outf("    Timestamp: %s\n", att.Timestamp.Format(time.RFC3339))
+				utils.Outf("    Data Hash: %x\n", att.Data)
+			}
+		}
 	}
 }

@@ -121,10 +121,92 @@ var attestCmd = &cobra.Command{
 }
 
 func init() {
+    createRegionCmd.Flags().String("name", "", "Region name")
+    createRegionCmd.Flags().String("sgx", "", "SGX endpoint")  
+    createRegionCmd.Flags().String("sev", "", "SEV endpoint")
+    createRegionCmd.MarkFlagRequired("name")
+
+    addTEECmd.Flags().String("sgx", "", "SGX endpoint")
+    addTEECmd.Flags().String("sev", "", "SEV endpoint")
+    addTEECmd.MarkFlagRequired("sgx")
+    addTEECmd.MarkFlagRequired("sev")
+
     regionCmd.AddCommand(
         createRegionCmd,
-        listRegionsCmd,
+        listRegionsCmd, 
         addTEECmd,
         attestCmd,
     )
+}
+
+func addTEE(_ *cobra.Command, args []string) error {
+    ctx := context.Background()
+    _, _, factory, cli, bcli, ws, err := handler.DefaultActor()
+    if err != nil {
+        return err
+    }
+
+    regionID := args[0]
+    sgxEndpoint := args[1] 
+    sevEndpoint := args[2]
+
+    // Create update region action
+    action := &actions.UpdateRegionAction{
+        RegionID: regionID,
+        SGXEndpoint: sgxEndpoint,
+        SEVEndpoint: sevEndpoint,
+    }
+
+    // Send transaction
+    cont, txID, err := sendAndWait(
+        ctx,
+        []chain.Action{action},
+        cli,
+        bcli,
+        ws,
+        factory,
+        true,
+    )
+    if err != nil {
+        return err
+    }
+
+    if !cont {
+        utils.Outf("{{red}}TEE update failed:{{/}} %s\n", txID)
+        return nil
+    }
+
+    utils.Outf("{{green}}TEE endpoints added:{{/}} %s\n", regionID)
+    return nil
+}
+
+func getAttestations(_ *cobra.Command, args []string) error {
+    ctx := context.Background()
+    _, _, _, _, bcli, _, err := handler.DefaultActor()
+    if err != nil {
+        return err
+    }
+
+    regionID := args[0]
+    attestations, err := bcli.GetRegionAttestations(ctx, regionID)
+    if err != nil {
+        return err
+    }
+
+    // Display attestations...
+    return nil
+}
+
+    utils.Outf("{{cyan}}Region Attestations:{{/}}\n")
+    utils.Outf("SGX Attestation:\n")
+    utils.Outf("  EnclaveID: %x\n", attestations.SGX.EnclaveID)
+    utils.Outf("  Measurement: %x\n", attestations.SGX.Measurement)
+    utils.Outf("  Timestamp: %s\n", attestations.SGX.Timestamp)
+
+    utils.Outf("\nSEV Attestation:\n")
+    utils.Outf("  EnclaveID: %x\n", attestations.SEV.EnclaveID) 
+    utils.Outf("  Measurement: %x\n", attestations.SEV.Measurement)
+    utils.Outf("  Timestamp: %s\n", attestations.SEV.Timestamp)
+
+    return nil
 }

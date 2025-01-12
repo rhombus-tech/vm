@@ -7,6 +7,7 @@ option go_package = "./pb;pb";  // Changed this line
 service TeeExecution {
     rpc Execute(ExecutionRequest) returns (ExecutionResult);
     rpc GetRegions(GetRegionsRequest) returns (GetRegionsResponse);
+    rpc GetAttestations(GetAttestationsRequest) returns (RegionAttestations);
 }
 
 message ExecutionRequest {
@@ -64,4 +65,12 @@ message Region {
     // Add fields for region capabilities
     repeated string supported_tee_types = 4;  // List of supported TEE types
     uint32 max_tasks = 5;                     // Maximum concurrent tasks
+}
+
+message RegionAttestations {
+    repeated TEEAttestation attestations = 1;
+}
+
+message GetAttestationsRequest {
+    string region_id = 1;
 }
