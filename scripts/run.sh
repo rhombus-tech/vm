@@ -19,6 +19,31 @@ source ./scripts/common/utils.sh
 
 VERSION=v1.11.12-rc.2
 
+# TEE Configuration
+TEE_ENABLED=${TEE_ENABLED:-true}
+SGX_ENDPOINT=${SGX_ENDPOINT:-"localhost:50051"}
+SEV_ENDPOINT=${SEV_ENDPOINT:-"localhost:50052"}
+TEE_CONFIG=""
+
+if [[ "${TEE_ENABLED}" == "true" ]]; then
+    TEE_CONFIG="--tee.sgx-endpoint=${SGX_ENDPOINT} --tee.sev-endpoint=${SEV_ENDPOINT}"
+    
+    # Launch TEE services if they're not already running
+    if ! pgrep -f "tee-service.*sgx" > /dev/null; then
+        echo "Starting SGX TEE service..."
+        docker run -d --name sgx-tee -p "${SGX_ENDPOINT}:50051" morpheus/tee-service:latest --mode=sgx
+    fi
+    
+    if ! pgrep -f "tee-service.*sev" > /dev/null; then
+        echo "Starting SEV TEE service..."
+        docker run -d --name sev-tee -p "${SEV_ENDPOINT}:50052" morpheus/tee-service:latest --mode=sev
+    fi
+    
+    # Wait for TEE services to be ready
+    echo "Waiting for TEE services to be ready..."
+    sleep 5
+fi
+
 ############################
 # build avalanchego
 # https://github.com/ava-labs/avalanchego/releases
@@ -85,9 +110,24 @@ if [[ ${MODE} == "run" ]]; then
   additional_args+=("--reuse-network")
 fi
 
+# Add TEE configuration to test arguments if enabled
+if [[ "${TEE_ENABLED}" == "true" ]]; then
+    additional_args+=("--tee.enabled=true")
+    additional_args+=("--tee.sgx-endpoint=${SGX_ENDPOINT}")
+    additional_args+=("--tee.sev-endpoint=${SEV_ENDPOINT}")
+fi
+
 echo "running e2e tests"
 ./tests/e2e/e2e.test \
 --ginkgo.v \
 --avalanchego-path="${AVALANCHEGO_PATH}" \
 --plugin-dir="${AVALANCHEGO_PLUGIN_DIR}" \
+${TEE_CONFIG} \
 "${additional_args[@]}"
+
+# Cleanup TEE services if they were started
+if [[ "${MODE}" == "test" && "${TEE_ENABLED}" == "true" ]]; then
+    echo "Cleaning up TEE services..."
+    docker stop sgx-tee sev-tee || true
+    docker rm sgx-tee sev-tee || true
+fi

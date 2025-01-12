@@ -4,19 +4,21 @@
 package integration_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/rhombus-tech/vm"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/crypto/ed25519"
 	"github.com/ava-labs/hypersdk/tests/integration"
+	"github.com/rhombus-tech/vm"
 
+	ginkgo "github.com/onsi/ginkgo/v2"
+	"github.com/rhombus-tech/vm/actions"
 	lconsts "github.com/rhombus-tech/vm/consts"
 	morpheusWorkload "github.com/rhombus-tech/vm/tests/workload"
-	ginkgo "github.com/onsi/ginkgo/v2"
 )
 
 func TestIntegration(t *testing.T) {
@@ -46,3 +48,33 @@ var _ = ginkgo.BeforeSuite(func() {
 		randomEd25519AuthFactory,
 	)
 })
+
+func TestRegionalTEE(t *testing.T) {
+    require := require.New(t)
+    
+    // Create test VM instance
+    vm, err := vm.New(vm.WithTEE("localhost:50051"))
+    require.NoError(err)
+
+    // Test region creation
+    regionID := "test-region"
+    err = vm.RegisterRegion(context.Background(), vm.RegionConfig{
+        ID: regionID,
+        SGXEndpoint: "localhost:50051",
+        SEVEndpoint: "localhost:50052",
+    })
+    require.NoError(err)
+
+    // Test regional execution
+    action := &actions.SendEventAction{
+        RegionID: regionID,
+        IDTo: "test-object",
+        FunctionCall: "test",
+        Parameters: []byte("test"),
+    }
+    
+    result, err := vm.ExecuteInRegion(context.Background(), regionID, action)
+    require.NoError(err)
+    require.NotNil(result)
+    require.Len(result.Attestations, 2)
+}

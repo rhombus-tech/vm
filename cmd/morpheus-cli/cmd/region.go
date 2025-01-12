@@ -105,3 +105,26 @@ func listRegions(_ *cobra.Command, _ []string) error {
 
     return nil
 }
+
+var addTEECmd = &cobra.Command{
+    Use: "add-tee [region-id] [sgx-endpoint] [sev-endpoint]",
+    Short: "Add TEE endpoints to a region",
+    Args: cobra.ExactArgs(3),
+    RunE: addTEE,
+}
+
+var attestCmd = &cobra.Command{
+    Use: "attest [region-id]",
+    Short: "Get attestations from region TEEs",
+    Args: cobra.ExactArgs(1), 
+    RunE: getAttestations,
+}
+
+func init() {
+    regionCmd.AddCommand(
+        createRegionCmd,
+        listRegionsCmd,
+        addTEECmd,
+        attestCmd,
+    )
+}
