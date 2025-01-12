@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/stretchr/testify/require"
-
 	"github.com/ava-labs/hypersdk/api/indexer"
 	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/auth"
@@ -20,6 +18,8 @@ import (
 	"github.com/ava-labs/hypersdk/crypto/secp256r1"
 	"github.com/ava-labs/hypersdk/fees"
 	"github.com/ava-labs/hypersdk/genesis"
+	sdkworkload "github.com/ava-labs/hypersdk/tests/workload"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/consts"
@@ -38,6 +38,13 @@ var (
     ed25519PrivKeys      = make([]ed25519.PrivateKey, len(ed25519HexKeys))
     ed25519Addrs         = make([]codec.Address, len(ed25519HexKeys))
     ed25519AuthFactories = make([]*auth.ED25519Factory, len(ed25519HexKeys))
+)
+
+// Verify interfaces are implemented correctly
+var (
+    _ sdkworkload.TxWorkloadFactory = (*workloadFactory)(nil)
+    _ sdkworkload.TxWorkloadIterator = (*simpleTxWorkload)(nil)
+    _ sdkworkload.TxWorkloadIterator = (*mixedAuthWorkload)(nil)
 )
 
 func init() {
@@ -59,7 +66,15 @@ type workloadFactory struct {
     addrs     []codec.Address
 }
 
-func New(minBlockGap int64) (*genesis.DefaultGenesis, *workloadFactory, *auth.PrivateKey, error) {
+type BalanceRequest struct {
+    Address codec.Address `json:"address"`
+}
+
+type BalanceResponse struct {
+    Amount uint64 `json:"amount"`
+}
+
+func New(minBlockGap int64) (*genesis.DefaultGenesis, sdkworkload.TxWorkloadFactory, *auth.PrivateKey, error) {
     customAllocs := make([]*genesis.CustomAllocation, 0, len(ed25519Addrs))
     for _, prefundedAddr := range ed25519Addrs {
         customAllocs = append(customAllocs, &genesis.CustomAllocation{
@@ -109,87 +124,64 @@ func NewJSONRPCClient(uri string) *JSONRPCClient {
     }
 }
 
-type Parser struct {
-    actionParser *codec.TypeParser[chain.Action]
-    outputParser *codec.TypeParser[codec.Typed]
-    authParser   *codec.TypeParser[chain.Auth]
-    rules        chain.Rules
+func (c *JSONRPCClient) ExecuteActions(
+    ctx context.Context,
+    actions []chain.Action,
+) ([][]byte, error) {
+    return c.requester.ExecuteActions(ctx, codec.EmptyAddress, actions)
 }
 
-func (p *Parser) Rules(_ int64) chain.Rules {
-    return p.rules
-}
-
-func (p *Parser) ActionCodec() *codec.TypeParser[chain.Action] {
-    return p.actionParser
-}
-
-func (p *Parser) OutputCodec() *codec.TypeParser[codec.Typed] {
-    return p.outputParser
-}
-
-func (p *Parser) AuthCodec() *codec.TypeParser[chain.Auth] {
-    return p.authParser
-}
 
 func (c *JSONRPCClient) Parser(ctx context.Context) (chain.Parser, error) {
-    if c.parser != nil {
-        return c.parser, nil
+    if c.parser == nil {
+        actionParser := codec.NewTypeParser[chain.Action]()
+        actionParser.Register(&actions.CreateObjectAction{}, nil)
+        actionParser.Register(&actions.SendEventAction{}, nil)
+        actionParser.Register(&actions.SetInputObjectAction{}, nil)
+        actionParser.Register(&actions.Transfer{}, nil)
+
+        outputParser := codec.NewTypeParser[codec.Typed]()
+        outputParser.Register(&actions.CreateObjectResult{}, nil)
+        outputParser.Register(&actions.SendEventResult{}, nil)
+        outputParser.Register(&actions.SetInputObjectResult{}, nil)
+        outputParser.Register(&actions.TransferResult{}, nil)
+
+        authParser := codec.NewTypeParser[chain.Auth]()
+        authParser.Register(&auth.ED25519{}, auth.UnmarshalED25519)
+        authParser.Register(&auth.SECP256R1{}, auth.UnmarshalSECP256R1)
+        authParser.Register(&auth.BLS{}, auth.UnmarshalBLS)
+
+        c.parser = &Parser{
+            actionParser: actionParser,
+            outputParser: outputParser,
+            authParser:   authParser,
+        }
     }
-
-    actionParser := codec.NewTypeParser[chain.Action]()
-    actionParser.Register(&actions.CreateObjectAction{}, nil)
-    actionParser.Register(&actions.SendEventAction{}, nil)
-    actionParser.Register(&actions.SetInputObjectAction{}, nil)
-    actionParser.Register(&actions.Transfer{}, nil)
-
-    outputParser := codec.NewTypeParser[codec.Typed]()
-    outputParser.Register(&actions.CreateObjectResult{}, nil)
-    outputParser.Register(&actions.SendEventResult{}, nil)
-    outputParser.Register(&actions.SetInputObjectResult{}, nil)
-    outputParser.Register(&actions.TransferResult{}, nil)
-
-    authParser := codec.NewTypeParser[chain.Auth]()
-    authParser.Register(&auth.ED25519{}, auth.UnmarshalED25519)
-    authParser.Register(&auth.SECP256R1{}, auth.UnmarshalSECP256R1)
-    authParser.Register(&auth.BLS{}, auth.UnmarshalBLS)
-
-    c.parser = &Parser{
-        actionParser: actionParser,
-        outputParser: outputParser,
-        authParser:   authParser,
-    }
-
     return c.parser, nil
 }
 
-type BalanceRequest struct {
-    Address codec.Address `json:"address"`
-}
-
-type BalanceResponse struct {
-    Amount uint64 `json:"amount"`
-}
 
 func (c *JSONRPCClient) Balance(ctx context.Context, addr codec.Address) (uint64, error) {
-    // Use ExecuteActions to query balance
-    actions := []chain.Action{
-        &actions.Transfer{ // Use as a read-only query
-            To: addr,
-            Value: 0,
+    // Use ExecuteActions for balance query
+    results, err := c.requester.ExecuteActions(
+        ctx,
+        addr,
+        []chain.Action{
+            &actions.Transfer{
+                To:    addr,
+                Value: 0, // Zero value for query
+            },
         },
-    }
-    
-    results, err := c.requester.ExecuteActions(ctx, addr, actions)
+    )
     if err != nil {
         return 0, err
     }
     
     if len(results) == 0 {
-        return 0, errors.New("no result returned")
+        return 0, errors.New("no results returned")
     }
     
-    // Parse balance from result using codec.NewReader
+    // Parse balance from result
     reader := codec.NewReader(results[0], len(results[0]))
     balance := reader.UnpackUint64(false)
     if reader.Err() != nil {
@@ -200,15 +192,38 @@ func (c *JSONRPCClient) Balance(ctx context.Context, addr codec.Address) (uint64
 }
 
 
-
-type TxWorkloadIterator interface {
-    Next() bool
-    GenerateTxWithAssertion(context.Context) (*chain.Transaction, TxAssertion, error)
+func (c *JSONRPCClient) Network(ctx context.Context) (uint32, uint32, ids.ID, error) {
+    networkID, subnetID, chainID, err := c.requester.Network(ctx)
+    if err != nil {
+        return 0, 0, ids.Empty, err
+    }
+    return networkID, uint32(subnetID[0]), chainID, nil // Access the first byte if needed
 }
 
-type TxAssertion func(context.Context, *require.Assertions, string)
+func (c *JSONRPCClient) GenerateTransactionManual(
+    parser chain.Parser,
+    actions []chain.Action,
+    auth chain.AuthFactory,
+    maxUnits uint64,
+) (uint64, *chain.Transaction, error) {
+    submitFunc, tx, err := c.requester.GenerateTransactionManual(
+        parser,
+        actions,
+        auth,
+        maxUnits,
+    )
+    if err != nil {
+        return 0, nil, err
+    }
 
-func (f *workloadFactory) NewSizedTxWorkload(uri string, size int) (TxWorkloadIterator, error) {
+    // Ignore submitFunc as we don't need it here
+    _ = submitFunc
+
+    return maxUnits, tx, nil
+}
+
+
+func (f *workloadFactory) NewSizedTxWorkload(uri string, size int) (sdkworkload.TxWorkloadIterator, error) {
     return &simpleTxWorkload{
         factory: f.factories[0],
         cli:     jsonrpc.NewJSONRPCClient(uri),
@@ -229,46 +244,12 @@ func (g *simpleTxWorkload) Next() bool {
     return g.count < g.size
 }
 
-func generateTransaction(
-    ctx context.Context,
-    chainID ids.ID,
-    actions []chain.Action,
-    authFactory chain.AuthFactory,
-    actionParser *codec.TypeParser[chain.Action],
-    authParser *codec.TypeParser[chain.Auth],
-) (*chain.Transaction, error) {
-    client := jsonrpc.NewJSONRPCClient("")
-    
-    // Create parser instance
-    parser := &Parser{
-        actionParser: actionParser,
-        outputParser: codec.NewTypeParser[codec.Typed](),
-        authParser:   authParser,
-    }
-    
-    // Use GenerateTransactionManual with proper parser
-    _, tx, err := client.GenerateTransactionManual(
-        parser, // Use the complete parser implementation
-        actions,
-        authFactory,
-        0, // maxUnits
-    )
-    if err != nil {
-        return nil, err
-    }
-    
-    // Verify the transaction
-    if err := tx.Verify(ctx); err != nil {
-        return nil, err
-    }
-
-    return tx, nil
+func (g *simpleTxWorkload) GenerateTx(ctx context.Context) (*chain.Transaction, error) {
+    tx, _, err := g.GenerateTxWithAssertion(ctx)
+    return tx, err
 }
 
-
-
-
-func (g *simpleTxWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.Transaction, TxAssertion, error) {
+func (g *simpleTxWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.Transaction, sdkworkload.TxAssertion, error) {
     g.count++
     other, err := ed25519.GeneratePrivateKey()
     if err != nil {
@@ -276,7 +257,7 @@ func (g *simpleTxWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.
     }
 
     aother := auth.NewED25519Address(other.PublicKey())
-    parser, err := g.lcli.Parser(ctx)
+    parser, err := g.lcli.Parser(ctx) // Now using the exported Parser method
     if err != nil {
         return nil, nil, err
     }
@@ -296,12 +277,47 @@ func (g *simpleTxWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.
         return nil, nil, err
     }
 
-    return tx, func(ctx context.Context, require *require.Assertions, uri string) {
+    assertion := func(ctx context.Context, require *require.Assertions, uri string) {
         confirmTx(ctx, require, uri, tx.ID(), aother, 1)
-    }, nil
+    }
+
+    return tx, assertion, nil
 }
 
-func (f *workloadFactory) NewWorkloads(uri string) ([]TxWorkloadIterator, error) {
+func generateTransaction(
+    ctx context.Context,
+    chainID ids.ID,
+    actions []chain.Action,
+    authFactory chain.AuthFactory,
+    actionParser *codec.TypeParser[chain.Action],
+    authParser *codec.TypeParser[chain.Auth],
+) (*chain.Transaction, error) {
+    client := jsonrpc.NewJSONRPCClient("")
+    
+    parser := &Parser{
+        actionParser: actionParser,
+        outputParser: codec.NewTypeParser[codec.Typed](),
+        authParser:   authParser,
+    }
+    
+    _, tx, err := client.GenerateTransactionManual(
+        parser,
+        actions,
+        authFactory,
+        0,
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    if err := tx.Verify(ctx); err != nil {
+        return nil, err
+    }
+
+    return tx, nil
+}
+
+func (f *workloadFactory) NewWorkloads(uri string) ([]sdkworkload.TxWorkloadIterator, error) {
     blsPriv, err := bls.GeneratePrivateKey()
     if err != nil {
         return nil, err
@@ -340,7 +356,7 @@ func (f *workloadFactory) NewWorkloads(uri string) ([]TxWorkloadIterator, error)
         chainID:   blockchainID,
     }
 
-    return []TxWorkloadIterator{generator}, nil
+    return []sdkworkload.TxWorkloadIterator{generator}, nil
 }
 
 type addressAndFactory struct {
@@ -362,7 +378,12 @@ func (g *mixedAuthWorkload) Next() bool {
     return g.count < len(g.addressAndFactories)-1
 }
 
-func (g *mixedAuthWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.Transaction, TxAssertion, error) {
+func (g *mixedAuthWorkload) GenerateTx(ctx context.Context) (*chain.Transaction, error) {
+    tx, _, err := g.GenerateTxWithAssertion(ctx)
+    return tx, err
+}
+
+func (g *mixedAuthWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.Transaction, sdkworkload.TxAssertion, error) {
     defer func() { g.count++ }()
 
     sender := g.addressAndFactories[g.count]
@@ -390,9 +411,11 @@ func (g *mixedAuthWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain
     }
     g.balance = expectedBalance
 
-    return tx, func(ctx context.Context, require *require.Assertions, uri string) {
+    assertion := func(ctx context.Context, require *require.Assertions, uri string) {
         confirmTx(ctx, require, uri, tx.ID(), receiver.address, expectedBalance)
-    }, nil
+    }
+
+    return tx, assertion, nil
 }
 
 func confirmTx(ctx context.Context, require *require.Assertions, uri string, txID ids.ID, receiverAddr codec.Address, receiverExpectedBalance uint64) {
@@ -414,11 +437,37 @@ func confirmTx(ctx context.Context, require *require.Assertions, uri string, txI
     transferOutputBytes := []byte(txRes.Outputs[0])
     require.Equal(consts.TransferID, transferOutputBytes[0])
 
+    parser, err := lcli.Parser(ctx)
+    require.NoError(err)
+
     reader := codec.NewReader(transferOutputBytes, len(transferOutputBytes))
-    transferOutputTyped, err := lcli.parser.OutputCodec().Unmarshal(reader)
+    transferOutputTyped, err := parser.OutputCodec().Unmarshal(reader)
     require.NoError(err)
 
     transferOutput, ok := transferOutputTyped.(*actions.TransferResult)
     require.True(ok)
     require.Equal(receiverExpectedBalance, transferOutput.ReceiverBalance)
+}
+
+type Parser struct {
+    actionParser *codec.TypeParser[chain.Action]
+    outputParser *codec.TypeParser[codec.Typed]
+    authParser   *codec.TypeParser[chain.Auth]
+    rules        chain.Rules
+}
+
+func (p *Parser) Rules(_ int64) chain.Rules {
+    return p.rules
+}
+
+func (p *Parser) ActionCodec() *codec.TypeParser[chain.Action] {
+    return p.actionParser
+}
+
+func (p *Parser) OutputCodec() *codec.TypeParser[codec.Typed] {
+    return p.outputParser
+}
+
+func (p *Parser) AuthCodec() *codec.TypeParser[chain.Auth] {
+    return p.authParser
 }
