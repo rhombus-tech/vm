@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rhombus-tech/vm/cmd/morpheusvm/version"
+	"github.com/rhombus-tech/vm/compute"
+	"github.com/rhombus-tech/vm/vm"
 )
 
 var rootCmd = &cobra.Command{
@@ -42,13 +44,27 @@ func main() {
 }
 
 func runFunc(*cobra.Command, []string) error {
-	if err := ulimit.Set(ulimit.DefaultFDLimit, logging.NoLog{}); err != nil {
-		return fmt.Errorf("%w: failed to set fd limit correctly", err)
-	}
+    if err := ulimit.Set(ulimit.DefaultFDLimit, logging.NoLog{}); err != nil {
+        return fmt.Errorf("%w: failed to set fd limit", err)
+    }
 
-	vm, err := vm.New(
-        vm.WithTEE(os.Getenv("TEE_ENDPOINT")), // Add TEE option
-    )
+    vmConfig := &vm.Config{
+        NetworkID: 0,
+        Regions: []vm.RegionConfig{},
+    }
+    
+    // Add TEE configuration from env
+    if teeEndpoint := os.Getenv("TEE_ENDPOINT"); teeEndpoint != "" {
+        vmConfig.ComputeNodeEndpoints = map[string]compute.NodeClientConfig{
+            "default": {
+                Endpoint: teeEndpoint,
+                ControllerPath: os.Getenv("TEE_CONTROLLER_PATH"),
+                WasmPath: os.Getenv("TEE_WASM_PATH"),
+            },
+        }
+    }
+
+    vm, err := vm.New(vmConfig)
     if err != nil {
         return err
     }
