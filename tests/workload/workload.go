@@ -2,26 +2,27 @@
 package workload
 
 import (
-    "context"
-    "math"
-    "time"
+	"context"
+	"errors"
+	"math"
+	"time"
 
-    "github.com/ava-labs/avalanchego/ids"
-    "github.com/stretchr/testify/require"
+	"github.com/ava-labs/avalanchego/ids"
+	"github.com/stretchr/testify/require"
 
-    "github.com/ava-labs/hypersdk/api/jsonrpc"
-    "github.com/ava-labs/hypersdk/api/indexer"
-    "github.com/ava-labs/hypersdk/auth"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/crypto/bls"
-    "github.com/ava-labs/hypersdk/crypto/ed25519"
-    "github.com/ava-labs/hypersdk/crypto/secp256r1"
-    "github.com/ava-labs/hypersdk/fees"
-    "github.com/ava-labs/hypersdk/genesis"
+	"github.com/ava-labs/hypersdk/api/indexer"
+	"github.com/ava-labs/hypersdk/api/jsonrpc"
+	"github.com/ava-labs/hypersdk/auth"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/crypto/bls"
+	"github.com/ava-labs/hypersdk/crypto/ed25519"
+	"github.com/ava-labs/hypersdk/crypto/secp256r1"
+	"github.com/ava-labs/hypersdk/fees"
+	"github.com/ava-labs/hypersdk/genesis"
 
-    "github.com/rhombus-tech/vm/actions"
-    "github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/consts"
 )
 
 const (
@@ -171,12 +172,34 @@ type BalanceResponse struct {
 }
 
 func (c *JSONRPCClient) Balance(ctx context.Context, addr codec.Address) (uint64, error) {
-    resp := new(BalanceResponse)
-    if err := c.requester.Request("morpheus.balance", &BalanceRequest{Address: addr}, resp); err != nil {
+    // Use ExecuteActions to query balance
+    actions := []chain.Action{
+        &actions.Transfer{ // Use as a read-only query
+            To: addr,
+            Value: 0,
+        },
+    }
+    
+    results, err := c.requester.ExecuteActions(ctx, addr, actions)
+    if err != nil {
         return 0, err
     }
-    return resp.Amount, nil
+    
+    if len(results) == 0 {
+        return 0, errors.New("no result returned")
+    }
+    
+    // Parse balance from result using codec.NewReader
+    reader := codec.NewReader(results[0], len(results[0]))
+    balance := reader.UnpackUint64(false)
+    if reader.Err() != nil {
+        return 0, reader.Err()
+    }
+    
+    return balance, nil
 }
+
+
 
 type TxWorkloadIterator interface {
     Next() bool
@@ -210,22 +233,40 @@ func generateTransaction(
     ctx context.Context,
     chainID ids.ID,
     actions []chain.Action,
-    auth chain.AuthFactory,
+    authFactory chain.AuthFactory,
     actionParser *codec.TypeParser[chain.Action],
     authParser *codec.TypeParser[chain.Auth],
 ) (*chain.Transaction, error) {
-    base := &chain.Base{
-        ChainID:   chainID,
-        Timestamp: time.Now().Unix(),
+    client := jsonrpc.NewJSONRPCClient("")
+    
+    // Create parser instance
+    parser := &Parser{
+        actionParser: actionParser,
+        outputParser: codec.NewTypeParser[codec.Typed](),
+        authParser:   authParser,
     }
-
-    tx := chain.NewTx(base, actions)
-    if err, _ := tx.Sign(auth, actionParser, authParser); err != nil {
+    
+    // Use GenerateTransactionManual with proper parser
+    _, tx, err := client.GenerateTransactionManual(
+        parser, // Use the complete parser implementation
+        actions,
+        authFactory,
+        0, // maxUnits
+    )
+    if err != nil {
+        return nil, err
+    }
+    
+    // Verify the transaction
+    if err := tx.Verify(ctx); err != nil {
         return nil, err
     }
 
     return tx, nil
 }
+
+
+
 
 func (g *simpleTxWorkload) GenerateTxWithAssertion(ctx context.Context) (*chain.Transaction, TxAssertion, error) {
     g.count++
