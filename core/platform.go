@@ -4,7 +4,6 @@ package core
 import (
 	"context"
 	"errors"
-	"time"
 )
 
 type PlatformType uint8
@@ -30,13 +29,4 @@ func NewPlatform(pType PlatformType, config *Config) (Platform, error) {
     default:
         return nil, errors.New("unsupported platform type")
     }
-}
-
-// ExecutionResult represents the result of code execution in a TEE
-type ExecutionResult struct {
-    Output       []byte
-    StateHash    []byte
-    RegionID     string             // Add region tracking
-    Attestations [2]TEEAttestation  // Both SGX and SEV attestations
-    Timestamp    time.Time
 }

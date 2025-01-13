@@ -1,19 +1,20 @@
 package compute
 
 import (
-    "time"
+	"time"
 
-"github.com/rhombus-tech/vm/core"
-
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/timeserver"
 )
 
 type ExecutionRequest struct {
-    IdTo         string `json:"id_to"`
-    FunctionCall string `json:"function_call"`
-    Parameters   []byte `json:"parameters"`
-    RegionId     string `json:"region_id"`
-    // Add any additional fields needed by the Rust bridge
+    IdTo         string                        `json:"id_to"`
+    FunctionCall string                        `json:"function_call"`
+    Parameters   []byte                        `json:"parameters"`
+    RegionId     string                        `json:"region_id"`
+    TimeProof    *timeserver.VerifiedTimestamp `json:"time_proof"` // Changed from Timestamp to TimeProof
 }
+
 
 type ExecutionResult struct {
     StateHash    []byte                 `json:"state_hash"`    // Add JSON tags

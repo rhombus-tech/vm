@@ -2,6 +2,7 @@
 package timeserver
 
 import (
+	"context"
 	"time"
 )
 
@@ -23,3 +24,22 @@ type VerificationResponse struct {
     ServerProof []byte
     Delay      time.Duration
 }
+
+type TimeVerifier struct {
+    network *TimeNetwork
+}
+
+func NewTimeVerifier() (*TimeVerifier, error) {
+    network := NewTimeNetwork(2, 100*time.Millisecond)
+    if err := network.Start(); err != nil {
+        return nil, err
+    }
+    
+    return &TimeVerifier{
+        network: network,
+    }, nil
+}
+
+func (tv *TimeVerifier) VerifyExecutionTime(ctx context.Context, regionID string) (*VerifiedTimestamp, error) {
+    return tv.network.GetVerifiedTimestamp(ctx, regionID)
+} 

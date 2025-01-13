@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ava-labs/hypersdk/codec"
+	"github.com/rhombus-tech/vm/timeserver"
 )
 
 // TEE platform types
@@ -28,6 +29,24 @@ type TEEAttestation struct {
     Signature   []byte    `serialize:"true" json:"signature"`
     RegionProof []byte    `serialize:"true" json:"region_proof"`
 }
+
+type ExecutionRequest struct {
+    IdTo         string
+    FunctionCall string
+    Parameters   []byte
+    RegionId     string
+    TimeProof    *timeserver.VerifiedTimestamp
+}
+
+// Update ExecutionResult to include TimeProof
+type ExecutionResult struct {
+    Output       []byte
+    StateHash    []byte
+    RegionID     string             
+    Attestations [2]TEEAttestation  
+    TimeProof    *timeserver.VerifiedTimestamp  // Add this field
+}
+
 
 // Unmarshal implements codec.Marshaler
 func (t *TEEAttestation) Unmarshal(p *codec.Packer) {

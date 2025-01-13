@@ -2,22 +2,24 @@
 package verifier
 
 import (
-    "context"
-    "errors"
-    "fmt"
-    "bytes"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"time"
 
-    // If you rely on roughtime, import it here:
-    // "github.com/cloudflare/roughtime"
+	// If you rely on roughtime, import it here:
+	// "github.com/cloudflare/roughtime"
 
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/state"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/state"
 
-    "github.com/rhombus-tech/vm/actions"
-    "github.com/rhombus-tech/vm/consts"
-    "github.com/rhombus-tech/vm/storage"
-    "github.com/rhombus-tech/vm/coordination"
-    "github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/storage"
+	"github.com/rhombus-tech/vm/timeserver"
 )
 
 var (
@@ -244,6 +246,39 @@ func (v *StateVerifier) verifyUpdateRegion(ctx context.Context, action *actions.
     // Verify updated attestations
     if err := v.VerifyAttestationPair(ctx, action.Attestations, region); err != nil {
         return err
+    }
+
+    return nil
+}
+
+func (v *StateVerifier) VerifyExecution(ctx context.Context, result *core.ExecutionResult) error {
+    // Verify attestations
+    if err := v.VerifyAttestationPair(ctx, result.Attestations, nil); err != nil {
+        return fmt.Errorf("attestation verification failed: %w", err)
+    }
+
+    // Verify timestamp
+    if err := v.verifyTimestamp(result.Timestamp); err != nil {
+        return fmt.Errorf("timestamp verification failed: %w", err)
+    }
+
+    return nil
+}
+
+func (v *StateVerifier) verifyTimestamp(timestamp *timeserver.VerifiedTimestamp) error {
+    if timestamp == nil {
+        return fmt.Errorf("missing timestamp")
+    }
+
+    // Verify we have enough proofs
+    if len(timestamp.Proofs) < 2 {
+        return fmt.Errorf("insufficient timestamp proofs")
+    }
+
+    // Verify timestamp is recent
+    age := time.Since(timestamp.Time)
+    if age > 5*time.Second {
+        return fmt.Errorf("timestamp too old: %v", age)
     }
 
     return nil
