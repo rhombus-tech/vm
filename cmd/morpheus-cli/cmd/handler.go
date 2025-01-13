@@ -38,48 +38,51 @@ func (h *Handler) Root() *cli.Handler {
 }
 
 func (h *Handler) DefaultActor() (
-	ids.ID, *auth.PrivateKey, chain.AuthFactory,
-	*jsonrpc.JSONRPCClient, *vm.JSONRPCClient, *ws.WebSocketClient, error,
+    *auth.PrivateKey, 
+    chain.AuthFactory,
+    *jsonrpc.JSONRPCClient,
+    *jsonrpc.JSONRPCClient, // Standard client for actions
+    *ws.WebSocketClient,
+    error,
 ) {
-	addr, priv, err := h.h.GetDefaultKey(true)
-	if err != nil {
-		return ids.Empty, nil, nil, nil, nil, nil, err
-	}
-	var factory chain.AuthFactory
-	switch addr[0] {
-	case auth.ED25519ID:
-		factory = auth.NewED25519Factory(ed25519.PrivateKey(priv))
-	case auth.SECP256R1ID:
-		factory = auth.NewSECP256R1Factory(secp256r1.PrivateKey(priv))
-	case auth.BLSID:
-		p, err := bls.PrivateKeyFromBytes(priv)
-		if err != nil {
-			return ids.Empty, nil, nil, nil, nil, nil, err
-		}
-		factory = auth.NewBLSFactory(p)
-	default:
-		return ids.Empty, nil, nil, nil, nil, nil, ErrInvalidAddress
-	}
-	chainID, uris, err := h.h.GetDefaultChain(true)
-	if err != nil {
-		return ids.Empty, nil, nil, nil, nil, nil, err
-	}
-	jcli := jsonrpc.NewJSONRPCClient(uris[0])
-	if err != nil {
-		return ids.Empty, nil, nil, nil, nil, nil, err
-	}
-	ws, err := ws.NewWebSocketClient(uris[0], ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
-	if err != nil {
-		return ids.Empty, nil, nil, nil, nil, nil, err
-	}
-	// For [defaultActor], we always send requests to the first returned URI.
-	return chainID, &auth.PrivateKey{
-			Address: addr,
-			Bytes:   priv,
-		}, factory, jcli,
-		vm.NewJSONRPCClient(
-			uris[0],
-		), ws, nil
+    addr, priv, err := h.h.GetDefaultKey(true)
+    if err != nil {
+        return nil, nil, nil, nil, nil, err
+    }
+
+    var factory chain.AuthFactory
+    switch addr[0] {
+    case auth.ED25519ID:
+        factory = auth.NewED25519Factory(ed25519.PrivateKey(priv))
+    case auth.SECP256R1ID:
+        factory = auth.NewSECP256R1Factory(secp256r1.PrivateKey(priv))
+    case auth.BLSID:
+        p, err := bls.PrivateKeyFromBytes(priv)
+        if err != nil {
+            return nil, nil, nil, nil, nil, err
+        }
+        factory = auth.NewBLSFactory(p)
+    default:
+        return nil, nil, nil, nil, nil, ErrInvalidAddress
+    }
+
+    _, uris, err := h.h.GetDefaultChain(true)
+    if err != nil {
+        return nil, nil, nil, nil, nil, err
+    }
+
+    cli := jsonrpc.NewJSONRPCClient(uris[0])
+    bcli := jsonrpc.NewJSONRPCClient(uris[0]) // Second client for non-action operations
+
+    wsClient, err := ws.NewWebSocketClient(uris[0], ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
+    if err != nil {
+        return nil, nil, nil, nil, nil, err
+    }
+
+    return &auth.PrivateKey{
+        Address: addr,
+        Bytes:   priv,
+    }, factory, cli, bcli, wsClient, nil
 }
 
 func (*Handler) GetBalance(

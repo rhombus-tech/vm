@@ -45,7 +45,8 @@ func init() {
 
 func createRegion(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    _, _, factory, cli, bcli, ws, err := handler.DefaultActor()
+    // Use handler to get the parser along with other components
+    chainID, priv, factory, cli, ws, parser, err := handler.DefaultActor()
     if err != nil {
         return err
     }
@@ -60,7 +61,7 @@ func createRegion(_ *cobra.Command, args []string) error {
             RegionID: regionID,
         }},
         cli,
-        bcli,
+        parser, // Pass the parser 
         ws,
         factory,
         true,
