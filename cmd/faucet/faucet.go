@@ -4,154 +4,152 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"sync"
-	"time"
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "strings"
+    "sync"
+    "time"
 
-	"github.com/gorilla/mux"
-	"github.com/rs/cors"
-	"golang.org/x/time/rate"
+    "github.com/gorilla/mux"
+    "github.com/rs/cors"
+    "golang.org/x/time/rate"
 
-	"github.com/ava-labs/avalanchego/ids"
-	"github.com/rhombus-tech/vm/actions"
-	"github.com/rhombus-tech/vm/consts"
-	"github.com/rhombus-tech/vm"
-	"github.com/ava-labs/hypersdk/api/jsonrpc"
-	"github.com/ava-labs/hypersdk/api/ws"
-	"github.com/ava-labs/hypersdk/auth"
-	"github.com/ava-labs/hypersdk/chain"
-	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/crypto/ed25519"
-	"github.com/ava-labs/hypersdk/pubsub"
-	"github.com/ava-labs/hypersdk/utils"
+    "github.com/ava-labs/avalanchego/ids"
+    "github.com/rhombus-tech/vm/actions"
+    "github.com/rhombus-tech/vm/consts"
+    vmapi "github.com/rhombus-tech/vm/api/jsonrpc" // Add this import
+    "github.com/ava-labs/hypersdk/api/jsonrpc"
+    "github.com/ava-labs/hypersdk/api/ws"
+    "github.com/ava-labs/hypersdk/auth"
+    "github.com/ava-labs/hypersdk/chain"
+    "github.com/ava-labs/hypersdk/codec"
+    "github.com/ava-labs/hypersdk/crypto/ed25519"
+    "github.com/ava-labs/hypersdk/pubsub"
+    "github.com/ava-labs/hypersdk/utils"
 )
 
 const (
-	amtStr           = "10.00"
-	faucetServerPort = "8765"
+    amtStr           = "10.00" // Amount to transfer from faucet
+    faucetServerPort = "8765"  // Default port for faucet server
 )
 
 var (
-	priv        ed25519.PrivateKey
-	factory     chain.AuthFactory
-	hyperVMRPC  *vm.JSONRPCClient
-	hyperSDKRPC *jsonrpc.JSONRPCClient
-	isReady     bool
-	healthMu    sync.RWMutex
-	wsClient    *ws.WebSocketClient
+    priv        ed25519.PrivateKey
+    factory     chain.AuthFactory
+    vmRPC       *vmapi.JSONRPCClient
+    hyperSDKRPC *jsonrpc.JSONRPCClient
+    isReady     bool
+    healthMu    sync.RWMutex
+    wsClient    *ws.WebSocketClient
 )
 
 func init() {
-	privBytes, err := hex.DecodeString(os.Getenv("FAUCET_PRIVATE_KEY_HEX"))
-	if err != nil {
-		log.Fatalf("failed to load private key: %v", err)
-	}
-	priv = ed25519.PrivateKey(privBytes)
-	factory = auth.NewED25519Factory(priv)
+    privBytes, err := hex.DecodeString(os.Getenv("FAUCET_PRIVATE_KEY_HEX"))
+    if err != nil {
+        log.Fatalf("failed to load private key: %v", err)
+    }
+    priv = ed25519.PrivateKey(privBytes)
+    factory = auth.NewED25519Factory(priv)
 
-	myAddressHex := auth.NewED25519Address(priv.PublicKey()).String()
-	log.Printf("Faucet address: %s\n", myAddressHex)
+    myAddressHex := auth.NewED25519Address(priv.PublicKey()).String()
+    log.Printf("Faucet address: %s\n", myAddressHex)
 
-	rpcEndpoint := os.Getenv("RPC_ENDPOINT")
-	if rpcEndpoint == "" {
-		log.Fatalf("RPC_ENDPOINT is not set")
-	}
-	url := fmt.Sprintf("%s/ext/bc/%s", rpcEndpoint, consts.Name)
-	hyperVMRPC = vm.NewJSONRPCClient(url)
-	hyperSDKRPC = jsonrpc.NewJSONRPCClient(url)
+    rpcEndpoint := os.Getenv("RPC_ENDPOINT")
+    if rpcEndpoint == "" {
+        log.Fatalf("RPC_ENDPOINT is not set")
+    }
+    url := fmt.Sprintf("%s/ext/bc/%s", rpcEndpoint, consts.Name)
+    vmRPC = vmapi.NewJSONRPCClient(url)        
+    hyperSDKRPC = jsonrpc.NewJSONRPCClient(url)
 
-	// Initialize WebSocket client
-	wsClient, err = ws.NewWebSocketClient(url, ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
-	if err != nil {
-		log.Fatalf("Failed to create WebSocket client: %v", err)
-	}
+    // Remove redeclared err variable
+    wsClient, err = ws.NewWebSocketClient(url, ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
+    if err != nil {
+        log.Fatalf("Failed to create WebSocket client: %v", err)
+    }
 }
 
 func transferCoins(to string) (string, error) {
-	to = strings.TrimPrefix(to, "0x")
+    to = strings.TrimPrefix(to, "0x")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
 
-	toAddr, err := codec.StringToAddress(to)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse to address: %w", err)
-	}
+    toAddr, err := codec.StringToAddress(to)
+    if err != nil {
+        return "", fmt.Errorf("failed to parse to address: %w", err)
+    }
 
-	amt, err := utils.ParseBalance(amtStr)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse amount: %w", err)
-	}
+    amt, err := utils.ParseBalance(amtStr)
+    if err != nil {
+        return "", fmt.Errorf("failed to parse amount: %w", err)
+    }
 
-	balanceBefore, err := hyperVMRPC.Balance(ctx, toAddr)
-	if err != nil {
-		return "", fmt.Errorf("failed to get balance: %w", err)
-	}
-	log.Printf("Balance before: %s\n", utils.FormatBalance(balanceBefore))
+    balanceBefore, err := vmRPC.Balance(ctx, toAddr)
+    if err != nil {
+        return "", fmt.Errorf("failed to get balance: %w", err)
+    }
+    log.Printf("Balance before: %s\n", utils.FormatBalance(balanceBefore))
 
-	threshold, _ := utils.ParseBalance("1.000")
-	if balanceBefore > threshold {
-		log.Printf("Balance is already greater than 1.000, no transfer needed\n")
-		return "Balance is already greater than 1.000, no transfer needed", nil
-	}
+    threshold, _ := utils.ParseBalance("1.000")
+    if balanceBefore > threshold {
+        log.Printf("Balance is already greater than 1.000, no transfer needed\n")
+        return "Balance is already greater than 1.000, no transfer needed", nil
+    }
 
-	parser, err := hyperVMRPC.Parser(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get parser: %w", err)
-	}
+    parser, err := vmRPC.Parser(ctx)
+    if err != nil {
+        return "", fmt.Errorf("failed to get parser: %w", err)
+    }
 
-	_, tx, _, err := hyperSDKRPC.GenerateTransaction(
-		ctx,
-		parser,
-		[]chain.Action{&actions.Transfer{
-			To:    toAddr,
-			Value: amt,
-		}},
-		factory,
-	)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate transaction: %w", err)
-	}
+    _, tx, _, err := hyperSDKRPC.GenerateTransaction(
+        ctx,
+        parser,
+        []chain.Action{&actions.Transfer{
+            To:    toAddr,
+            Value: amt,
+        }},
+        factory,
+    )
+    if err != nil {
+        return "", fmt.Errorf("failed to generate transaction: %w", err)
+    }
 
-	// Register transaction with WebSocket client
-	if err := wsClient.RegisterTx(tx); err != nil {
-		return "", fmt.Errorf("failed to register transaction: %w", err)
-	}
+    if err := wsClient.RegisterTx(tx); err != nil {
+        return "", fmt.Errorf("failed to register transaction: %w", err)
+    }
 
-	// Listen for the transaction result
-	var result *chain.Result
-	for {
-		txID, txErr, txResult, err := wsClient.ListenTx(ctx)
-		if err != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return "", fmt.Errorf("failed to listen for transaction: %w", ctx.Err())
-			}
-			return "", fmt.Errorf("failed to listen for transaction: %w", err)
-		}
-		if txErr != nil {
-			return "", txErr
-		}
-		if txID == tx.ID() {
-			result = txResult
-			break
-		}
-		log.Printf("Skipping unexpected transaction: %s\n", tx.ID())
-	}
+    var result *chain.Result
+    for {
+        txID, txErr, txResult, err := wsClient.ListenTx(ctx)
+        if err != nil {
+            if ctx.Err() == context.DeadlineExceeded {
+                return "", fmt.Errorf("failed to listen for transaction: %w", ctx.Err())
+            }
+            return "", fmt.Errorf("failed to listen for transaction: %w", err)
+        }
+        if txErr != nil {
+            return "", txErr
+        }
+        if txID == tx.ID() {
+            result = txResult
+            break
+        }
+        log.Printf("Skipping unexpected transaction: %s\n", tx.ID())
+    }
 
-	// Check transaction result
-	if !result.Success {
-		return "", fmt.Errorf("transaction failed: %s", result.Error)
-	}
+    if !result.Success {
+        return "", fmt.Errorf("transaction failed: %s", result.Error)
+    }
 
-	return "Coins transferred successfully", nil
+    return "Coins transferred successfully", nil
 }
+
 
 func main() {
 	r := mux.NewRouter()

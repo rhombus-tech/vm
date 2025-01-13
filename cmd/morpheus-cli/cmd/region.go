@@ -4,12 +4,12 @@
 package cmd
 
 import (
-    "context"
-    
-    "github.com/spf13/cobra"
-    "github.com/ava-labs/hypersdk/utils"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/rhombus-tech/vm/actions"
+	"context"
+
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/utils"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/spf13/cobra"
 )
 
 var regionCmd = &cobra.Command{
@@ -45,25 +45,25 @@ func init() {
 
 func createRegion(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    // Capture DefaultActor return values with their actual types
-    jsonRpcClient, vmJsonRpcClient, auth, client, webSocket, err := handler.DefaultActor() 
+    
+    _, authFactory, cli, vmClient, wsClient, err := handler.DefaultActor()
     if err != nil {
         return err
     }
 
-    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
-
     regionID := args[0]
+
+    action := &actions.CreateRegionAction{
+        RegionID: regionID,
+    }
 
     cont, txID, err := sendAndWait(
         ctx,
-        []chain.Action{&actions.CreateRegionAction{
-            RegionID: regionID,
-        }},
-        jsonRpcClient,
+        []chain.Action{action},
+        cli,
         vmClient,
-        webSocket,
-        auth, // Use auth as the AuthFactory
+        wsClient,
+        authFactory,
         true,
     )
     if err != nil {
@@ -79,15 +79,15 @@ func createRegion(_ *cobra.Command, args []string) error {
     return nil
 }
 
+
 func listRegions(_ *cobra.Command, _ []string) error {
     ctx := context.Background()
-    // Get all values and check error
-    _, _, _, client, _, err := handler.DefaultActor()
+    
+    _, _, _, vmClient, _, err := handler.DefaultActor()
     if err != nil {
         return err
     }
 
-    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
     resp, err := vmClient.GetRegions(ctx)
     if err != nil {
         return err
@@ -107,6 +107,7 @@ func listRegions(_ *cobra.Command, _ []string) error {
 
     return nil
 }
+
 
 var addTEECmd = &cobra.Command{
     Use: "add-tee [region-id] [sgx-endpoint] [sev-endpoint]",
@@ -143,12 +144,11 @@ func init() {
 
 func addTEE(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    jsonRpcClient, vmJsonRpcClient, auth, client, webSocket, err := handler.DefaultActor()
+    
+    _, authFactory, cli, vmClient, wsClient, err := handler.DefaultActor()
     if err != nil {
         return err
     }
-
-    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
 
     regionID := args[0]
     sgxEndpoint := args[1] 
@@ -163,10 +163,10 @@ func addTEE(_ *cobra.Command, args []string) error {
     cont, txID, err := sendAndWait(
         ctx,
         []chain.Action{action},
-        jsonRpcClient,
+        cli,
         vmClient,
-        webSocket,
-        auth,
+        wsClient,
+        authFactory,
         true,
     )
     if err != nil {
@@ -182,15 +182,15 @@ func addTEE(_ *cobra.Command, args []string) error {
     return nil
 }
 
+
 func getAttestations(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    _, _, _, client, _, err := handler.DefaultActor()
+    
+    _, _, _, vmClient, _, err := handler.DefaultActor()
     if err != nil {
         return err
     }
 
-    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
-    
     regionID := args[0]
     attestations, err := vmClient.GetRegionAttestations(ctx, regionID)
     if err != nil {

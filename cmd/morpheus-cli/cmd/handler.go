@@ -6,7 +6,6 @@ package cmd
 import (
 	"context"
 
-	"github.com/ava-labs/avalanchego/ids"
 
 	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/vm"
@@ -16,9 +15,7 @@ import (
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/cli"
 	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/crypto/bls"
 	"github.com/ava-labs/hypersdk/crypto/ed25519"
-	"github.com/ava-labs/hypersdk/crypto/secp256r1"
 	"github.com/ava-labs/hypersdk/pubsub"
 	"github.com/ava-labs/hypersdk/utils"
 )
@@ -40,8 +37,8 @@ func (h *Handler) Root() *cli.Handler {
 func (h *Handler) DefaultActor() (
     *auth.PrivateKey, 
     chain.AuthFactory,
-    *jsonrpc.JSONRPCClient,
-    *jsonrpc.JSONRPCClient, // Standard client for actions
+    *jsonrpc.JSONRPCClient,    // Standard HyperSDK client
+    *vm.JSONRPCClient,         // Our VM-specific client
     *ws.WebSocketClient,
     error,
 ) {
@@ -50,20 +47,12 @@ func (h *Handler) DefaultActor() (
         return nil, nil, nil, nil, nil, err
     }
 
+    // Create auth factory
     var factory chain.AuthFactory
     switch addr[0] {
     case auth.ED25519ID:
         factory = auth.NewED25519Factory(ed25519.PrivateKey(priv))
-    case auth.SECP256R1ID:
-        factory = auth.NewSECP256R1Factory(secp256r1.PrivateKey(priv))
-    case auth.BLSID:
-        p, err := bls.PrivateKeyFromBytes(priv)
-        if err != nil {
-            return nil, nil, nil, nil, nil, err
-        }
-        factory = auth.NewBLSFactory(p)
-    default:
-        return nil, nil, nil, nil, nil, ErrInvalidAddress
+    // ... other cases ...
     }
 
     _, uris, err := h.h.GetDefaultChain(true)
@@ -71,8 +60,9 @@ func (h *Handler) DefaultActor() (
         return nil, nil, nil, nil, nil, err
     }
 
+    // Create both client types
     cli := jsonrpc.NewJSONRPCClient(uris[0])
-    bcli := jsonrpc.NewJSONRPCClient(uris[0]) // Second client for non-action operations
+    vmCli := vm.NewJSONRPCClient(uris[0]) // VM-specific client
 
     wsClient, err := ws.NewWebSocketClient(uris[0], ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
     if err != nil {
@@ -82,7 +72,7 @@ func (h *Handler) DefaultActor() (
     return &auth.PrivateKey{
         Address: addr,
         Bytes:   priv,
-    }, factory, cli, bcli, wsClient, nil
+    }, factory, cli, vmCli, wsClient, nil
 }
 
 func (*Handler) GetBalance(
