@@ -189,6 +189,19 @@ func init() {
 	prometheusCmd.AddCommand(
 		generatePrometheusCmd,
 	)
+	
+    rootCmd.AddCommand(
+        regionCmd,
+        teeCmd,
+        computeCmd,
+        // ... other existing commands ...
+    )
+
+    // Region command flags
+    createRegionCmd.Flags().String("sgx", "", "SGX endpoint")
+    createRegionCmd.Flags().String("sev", "", "SEV endpoint")
+    createRegionCmd.MarkFlagRequired("sgx")
+    createRegionCmd.MarkFlagRequired("sev")
 }
 
 func Execute() error {

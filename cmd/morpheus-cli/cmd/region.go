@@ -1,15 +1,21 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
-
+// cmd/morpheus-cli/cmd/region.go
 package cmd
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/utils"
 	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/core"
 	"github.com/spf13/cobra"
+)
+
+var (
+    sgxEndpoint string
+    sevEndpoint string
 )
 
 var regionCmd = &cobra.Command{
@@ -21,26 +27,234 @@ var regionCmd = &cobra.Command{
 }
 
 var createRegionCmd = &cobra.Command{
-    Use: "create [id]",
-    Short: "Create a new region",
+    Use: "create [region-id]",
+    Short: "Create new region",
     Args: cobra.ExactArgs(1),
-    RunE: createRegion,
+    RunE: func(_ *cobra.Command, args []string) error {
+        ctx := context.Background()
+        _, authFactory, cli, vmClient, wsClient, err := handler.DefaultActor()
+        if err != nil {
+            return err
+        }
+
+        regionID := args[0]
+
+        // Get attestations for both TEEs
+        attestations, err := vmClient.GetRegionAttestations(ctx, regionID)
+        if err != nil {
+            return err
+        }
+
+        // Convert to core.TEEAttestation array
+        var teeAttestations [2]core.TEEAttestation
+        for i, att := range attestations[:2] {
+            // Parse timestamp string into time.Time
+            timestamp, err := time.Parse(time.RFC3339, att.Timestamp)
+            if err != nil {
+                return fmt.Errorf("failed to parse attestation timestamp: %w", err)
+            }
+
+            teeAttestations[i] = core.TEEAttestation{
+                EnclaveID:   att.EnclaveId,
+                Measurement: att.Measurement,
+                Timestamp:   timestamp,  // Now using parsed time.Time
+                Data:        att.Data,
+                Signature:   att.Signature,
+                RegionProof: att.RegionProof,
+            }
+        }
+
+        // Create TEE addresses from endpoints
+        tees := []core.TEEAddress{
+            []byte(sgxEndpoint),
+            []byte(sevEndpoint),
+        }
+
+        action := &actions.CreateRegionAction{
+            RegionID:     regionID,
+            TEEs:         tees,
+            Attestations: teeAttestations,
+        }
+
+        cont, txID, err := sendAndWait(
+            ctx,
+            []chain.Action{action},
+            cli,
+            vmClient,
+            wsClient,
+            authFactory,
+            true,
+        )
+        if err != nil {
+            return err
+        }
+
+        if !cont {
+            utils.Outf("{{red}}region creation failed:{{/}} %s\n", txID)
+            return nil
+        }
+
+        utils.Outf("{{green}}region created:{{/}} %s\n", regionID)
+        return nil
+    },
 }
 
 var listRegionsCmd = &cobra.Command{
     Use: "list",
-    Short: "List all regions",
-    RunE: listRegions,
+    Short: "List existing regions",
+    RunE: func(_ *cobra.Command, _ []string) error {
+        ctx := context.Background()
+        _, _, _, vmClient, _, err := handler.DefaultActor()
+        if err != nil {
+            return err
+        }
+
+        regions, err := vmClient.GetRegions(ctx)
+        if err != nil {
+            return err
+        }
+
+        if len(regions.Regions) == 0 {
+            utils.Outf("{{yellow}}no regions found{{/}}\n")
+            return nil
+        }
+
+        utils.Outf("{{cyan}}Regions:{{/}}\n")
+        for _, region := range regions.Regions {
+            utils.Outf("- ID: %s\n", region.Id)
+            utils.Outf("  Created: %s\n", region.CreatedAt)
+            utils.Outf("  Worker Count: %d\n", len(region.WorkerIds))
+        }
+        return nil
+    },
+}
+
+var addTEECmd = &cobra.Command{
+    Use: "add-tee [region-id] [sgx-endpoint] [sev-endpoint]",
+    Short: "Add TEE endpoints to region",
+    Args: cobra.ExactArgs(3),
+    RunE: func(_ *cobra.Command, args []string) error {
+        ctx := context.Background()
+        _, authFactory, cli, vmClient, wsClient, err := handler.DefaultActor()
+        if err != nil {
+            return err
+        }
+
+        action := &actions.UpdateRegionAction{
+            RegionID: args[0],
+            SGXEndpoint: args[1],
+            SEVEndpoint: args[2],
+        }
+
+        cont, txID, err := sendAndWait(
+            ctx,
+            []chain.Action{action},
+            cli,
+            vmClient,
+            wsClient,
+            authFactory,
+            true,
+        )
+        if err != nil {
+            return err
+        }
+
+        if !cont {
+            utils.Outf("{{red}}TEE update failed:{{/}} %s\n", txID)
+            return nil
+        }
+
+        utils.Outf("{{green}}TEE endpoints added{{/}}\n")
+        return nil
+    },
+}
+
+var attestCmd = &cobra.Command{
+    Use: "attest [region-id]",
+    Short: "Get region attestations",
+    Args: cobra.ExactArgs(1),
+    RunE: func(_ *cobra.Command, args []string) error {
+        ctx := context.Background()
+        _, _, _, vmClient, _, err := handler.DefaultActor()
+        if err != nil {
+            return err
+        }
+
+        attestations, err := vmClient.GetRegionAttestations(ctx, args[0])
+        if err != nil {
+            return err
+        }
+
+        utils.Outf("{{cyan}}Region Attestations:{{/}}\n")
+        if len(attestations) >= 2 {
+            utils.Outf("SGX Attestation:\n")
+            utils.Outf("  EnclaveID: %x\n", attestations[0].EnclaveId)
+            utils.Outf("  Measurement: %x\n", attestations[0].Measurement)
+            utils.Outf("  Timestamp: %s\n", attestations[0].Timestamp)
+
+            utils.Outf("\nSEV Attestation:\n")
+            utils.Outf("  EnclaveID: %x\n", attestations[1].EnclaveId)
+            utils.Outf("  Measurement: %x\n", attestations[1].Measurement)
+            utils.Outf("  Timestamp: %s\n", attestations[1].Timestamp)
+        } else {
+            utils.Outf("{{yellow}}insufficient attestations found{{/}}\n")
+        }
+        return nil
+    },
 }
 
 func init() {
+    // Create and add commands with their RunE functions
+    createRegionCmd := &cobra.Command{
+        Use:   "create [region-id]",
+        Short: "Create new region",
+        Args:  cobra.ExactArgs(1),
+        RunE:  createRegion,  // Attach the function here
+    }
+
+    listRegionsCmd := &cobra.Command{
+        Use:   "list",
+        Short: "List existing regions",
+        RunE:  listRegions,  // Attach the function here
+    }
+
+    addTEECmd := &cobra.Command{
+        Use:   "add-tee [region-id] [sgx-endpoint] [sev-endpoint]",
+        Short: "Add TEE endpoints to region",
+        Args:  cobra.ExactArgs(3),
+        RunE:  addTEE,  // Attach the function here
+    }
+
+    attestCmd := &cobra.Command{
+        Use:   "attest [region-id]",
+        Short: "Get region attestations",
+        Args:  cobra.ExactArgs(1),
+        RunE:  getAttestations,  // Attach the function here
+    }
+
+    // Add all subcommands to the region command
     regionCmd.AddCommand(
         createRegionCmd,
         listRegionsCmd,
+        addTEECmd,
+        attestCmd,
     )
-    
-    // Add regionCmd to root command
-    rootCmd.AddCommand(regionCmd)
+
+    // Add flags
+    createRegionCmd.Flags().StringVar(
+        &sgxEndpoint,
+        "sgx",
+        "",
+        "SGX endpoint",
+    )
+    createRegionCmd.Flags().StringVar(
+        &sevEndpoint,
+        "sev",
+        "",
+        "SEV endpoint",
+    )
+    createRegionCmd.MarkFlagRequired("sgx")
+    createRegionCmd.MarkFlagRequired("sev")
 }
 
 func createRegion(_ *cobra.Command, args []string) error {
@@ -106,21 +320,6 @@ func listRegions(_ *cobra.Command, _ []string) error {
     }
 
     return nil
-}
-
-
-var addTEECmd = &cobra.Command{
-    Use: "add-tee [region-id] [sgx-endpoint] [sev-endpoint]",
-    Short: "Add TEE endpoints to a region",
-    Args: cobra.ExactArgs(3),
-    RunE: addTEE,
-}
-
-var attestCmd = &cobra.Command{
-    Use: "attest [region-id]",
-    Short: "Get attestations from region TEEs",
-    Args: cobra.ExactArgs(1), 
-    RunE: getAttestations,
 }
 
 func init() {
