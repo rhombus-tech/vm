@@ -10,45 +10,44 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/api/ws"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/utils"
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/core"
-	"github.com/rhombus-tech/vm/vm"
+	hyperjsonrpc "github.com/ava-labs/hypersdk/api/jsonrpc"
+    apirpc "github.com/rhombus-tech/vm/api/jsonrpc"
 )
 
 // sendAndWait may not be used concurrently
 func sendAndWait(
-    ctx context.Context, 
-    actions []chain.Action, 
-    cli *jsonrpc.JSONRPCClient,
-    bcli *vm.JSONRPCClient, // Keep VM's client
-    ws *ws.WebSocketClient, 
-    factory chain.AuthFactory, 
+    ctx context.Context,
+    actions []chain.Action,
+    standardClient *hyperjsonrpc.JSONRPCClient,
+    apiClient *apirpc.JSONRPCClient,
+    wsClient *ws.WebSocketClient,
+    factory chain.AuthFactory,
     printStatus bool,
 ) (bool, ids.ID, error) {
-    // Get parser from VM client
-    parser, err := bcli.Parser(ctx)
-    if err != nil {
-        return false, ids.Empty, err 
-    }
-
-    // Generate transaction using parser
-    _, tx, _, err := cli.GenerateTransaction(ctx, parser, actions, factory)
+    parser, err := apiClient.Parser(ctx)
     if err != nil {
         return false, ids.Empty, err
     }
 
-    if err := ws.RegisterTx(tx); err != nil {
+    // Use standardClient for transaction generation
+    _, tx, _, err := standardClient.GenerateTransaction(ctx, parser, actions, factory)
+    if err != nil {
+        return false, ids.Empty, err
+    }
+
+    if err := wsClient.RegisterTx(tx); err != nil {
         return false, ids.Empty, err
     }
 
     var result *chain.Result
     for {
-        txID, txErr, txResult, err := ws.ListenTx(ctx)
+        txID, txErr, txResult, err := wsClient.ListenTx(ctx)
         if err != nil {
             return false, ids.Empty, err
         }

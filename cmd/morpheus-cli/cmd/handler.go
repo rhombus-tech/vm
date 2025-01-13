@@ -9,7 +9,6 @@ import (
 
 	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/vm"
-	"github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/api/ws"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/chain"
@@ -17,13 +16,15 @@ import (
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/crypto/ed25519"
 	"github.com/ava-labs/hypersdk/pubsub"
-	"github.com/ava-labs/hypersdk/utils"
+	"github.com/ava-labs/hypersdk/utils" // Add this alias
+    apirpc "github.com/rhombus-tech/vm/api/jsonrpc"  
+	hyperjsonrpc "github.com/ava-labs/hypersdk/api/jsonrpc"
 )
 
 var _ cli.Controller = (*Controller)(nil)
 
 type Handler struct {
-	h *cli.Handler
+    h *cli.Handler
 }
 
 func NewHandler(h *cli.Handler) *Handler {
@@ -35,24 +36,22 @@ func (h *Handler) Root() *cli.Handler {
 }
 
 func (h *Handler) DefaultActor() (
-    *auth.PrivateKey, 
-    chain.AuthFactory,
-    *jsonrpc.JSONRPCClient,    // Standard HyperSDK client
-    *vm.JSONRPCClient,         // Our VM-specific client
-    *ws.WebSocketClient,
-    error,
+    priv *auth.PrivateKey,
+    factory chain.AuthFactory,
+    standardClient *hyperjsonrpc.JSONRPCClient,  // Add back HyperSDK client
+    apiClient *apirpc.JSONRPCClient,
+    wsClient *ws.WebSocketClient,
+    err error,
 ) {
-    addr, priv, err := h.h.GetDefaultKey(true)
+    addr, privKey, err := h.h.GetDefaultKey(true)
     if err != nil {
         return nil, nil, nil, nil, nil, err
     }
 
-    // Create auth factory
-    var factory chain.AuthFactory
+    var authFactory chain.AuthFactory
     switch addr[0] {
     case auth.ED25519ID:
-        factory = auth.NewED25519Factory(ed25519.PrivateKey(priv))
-    // ... other cases ...
+        authFactory = auth.NewED25519Factory(ed25519.PrivateKey(privKey))
     }
 
     _, uris, err := h.h.GetDefaultChain(true)
@@ -60,43 +59,44 @@ func (h *Handler) DefaultActor() (
         return nil, nil, nil, nil, nil, err
     }
 
-    // Create both client types
-    cli := jsonrpc.NewJSONRPCClient(uris[0])
-    vmCli := vm.NewJSONRPCClient(uris[0]) // VM-specific client
+    // Create both clients
+    standardClient = hyperjsonrpc.NewJSONRPCClient(uris[0])
+    apiClient = apirpc.NewJSONRPCClient(uris[0])
 
-    wsClient, err := ws.NewWebSocketClient(uris[0], ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
+    wsClient, err = ws.NewWebSocketClient(uris[0], ws.DefaultHandshakeTimeout, pubsub.MaxPendingMessages, pubsub.MaxReadMessageSize)
     if err != nil {
         return nil, nil, nil, nil, nil, err
     }
 
     return &auth.PrivateKey{
         Address: addr,
-        Bytes:   priv,
-    }, factory, cli, vmCli, wsClient, nil
+        Bytes:   privKey,
+    }, authFactory, standardClient, apiClient, wsClient, nil
 }
 
-func (*Handler) GetBalance(
-	ctx context.Context,
-	cli *vm.JSONRPCClient,
-	addr codec.Address,
+func (h *Handler) GetBalance(
+    ctx context.Context,
+    addr codec.Address,
+    cli *apirpc.JSONRPCClient, // Use our API client
 ) (uint64, error) {
-	balance, err := cli.Balance(ctx, addr)
-	if err != nil {
-		return 0, err
-	}
-	if balance == 0 {
-		utils.Outf("{{red}}balance:{{/}} 0 %s\n", consts.Symbol)
-		utils.Outf("{{red}}please send funds to %s{{/}}\n", addr)
-		utils.Outf("{{red}}exiting...{{/}}\n")
-		return 0, nil
-	}
-	utils.Outf(
-		"{{yellow}}balance:{{/}} %s %s\n",
-		utils.FormatBalance(balance),
-		consts.Symbol,
-	)
-	return balance, nil
+    balance, err := cli.Balance(ctx, addr)
+    if err != nil {
+        return 0, err
+    }
+    if balance == 0 {
+        utils.Outf("{{red}}balance:{{/}} 0 %s\n", consts.Symbol)
+        utils.Outf("{{red}}please send funds to %s{{/}}\n", addr)
+        utils.Outf("{{red}}exiting...{{/}}\n")
+        return 0, nil
+    }
+    utils.Outf(
+        "{{yellow}}balance:{{/}} %s %s\n",
+        utils.FormatBalance(balance),
+        consts.Symbol,
+    )
+    return balance, nil
 }
+
 
 type Controller struct {
 	databasePath string

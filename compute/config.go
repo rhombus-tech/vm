@@ -1,8 +1,6 @@
 package compute
 
 import (
-    "errors"
-
     "github.com/ava-labs/avalanchego/x/merkledb"
     "github.com/rhombus-tech/vm/core"
     "github.com/rhombus-tech/vm/regions"
@@ -12,15 +10,12 @@ type Config struct {
     MaxTasks       int
     TEEConfig      *core.Config
     RegionConfig   *regions.RegionConfig
-    DB             merkledb.MerkleDB  // Added DB field
-    WasmPath       string            // Added WasmPath field
-    ControllerPath string            // Added ControllerPath field
+    DB             merkledb.MerkleDB
+    WasmPath       string
+    ControllerPath string
     Debug          bool
+    RegionID       string  // Add this field
 }
-
-var (
-    ErrInvalidConfig = errors.New("invalid configuration")
-)
 
 func DefaultConfig() *Config {
     return &Config{
@@ -41,5 +36,6 @@ func DefaultConfig() *Config {
         WasmPath: "/usr/local/bin/tee-wasm-module.wasm",
         ControllerPath: "/usr/local/bin/tee-controller",
         Debug: false,
+        RegionID: "",
     }
 }

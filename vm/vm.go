@@ -16,12 +16,16 @@ import (
 	"github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/wrappers"
 	"github.com/ava-labs/avalanchego/version"
+	"github.com/ava-labs/hypersdk/api"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
 	sdkvm "github.com/ava-labs/hypersdk/vm"
 
 	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/api/jsonrpc"
+	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/verifier"
 )
 
@@ -65,8 +69,6 @@ func init() {
         panic(errs.Err)
     }
 }
-
-// Add this method to the existing ShuttleVM
 func (vm *ShuttleVM) initializeValidators() {
     vm.validatorMgr = &validatorManager{
         validators: make(map[string]*verifier.StateVerifier),
@@ -78,6 +80,25 @@ func (vm *ShuttleVM) initializeValidators() {
         vm.validatorMgr.validators[region.ID] = validator
     }
 }
+
+func (vm *ShuttleVM) GetRegionWorkers(ctx context.Context, regionID string) ([]*jsonrpc.Worker, error) {
+    // Implement logic to get workers from your coordination system
+    workers := make([]*jsonrpc.Worker, 0)
+    // Get workers from your coordination system
+    // Example:
+    // workers = vm.coordinator.GetWorkers(regionID)
+    return workers, nil
+}
+
+func (vm *ShuttleVM) GetRegionTasks(ctx context.Context, regionID string) ([]*jsonrpc.Task, error) {
+    // Implement logic to get tasks from your coordination system
+    tasks := make([]*jsonrpc.Task, 0)
+    // Get tasks from your coordination system
+    // Example:
+    // tasks = vm.coordinator.GetTasks(regionID)
+    return tasks, nil
+}
+
 
 // Add regional validation to existing ValidateTransaction
 func (vm *ShuttleVM) validateRegionalActions(ctx context.Context, tx *chain.Transaction) error {
@@ -155,12 +176,6 @@ func (vm *ShuttleVM) StateSync() error {
     return nil
 }
 
-// You can remove these since they're not part of the interface:
-// - StateSyncEnabled
-// - GetStateSummary
-// - ParseStateSummary
-// - StateSummary struct and its methods
-
 // Keep all these other methods as they're likely part of other interfaces:
 func (vm *ShuttleVM) Connected(ctx context.Context, nodeID ids.NodeID, version *version.Application) error {
     return nil
@@ -189,10 +204,84 @@ func (vm *ShuttleVM) AppGossip(ctx context.Context, nodeID ids.NodeID, msg []byt
 func (vm *ShuttleVM) Version(context.Context) (string, error) {
     return "0.0.1", nil
 }
-
-func (vm *ShuttleVM) CreateHandlers(context.Context) (map[string]http.Handler, error) {
-    return map[string]http.Handler{}, nil
+func (vm *ShuttleVM) CreateHandlers(ctx context.Context) (map[string]http.Handler, error) {
+    handlers := make(map[string]http.Handler)
+    
+    // Create API RPC server
+    rpcServer := jsonrpc.NewJSONRPCServer(vm)
+    rpcHandler, err := api.NewJSONRPCHandler(consts.Name, rpcServer)
+    if err != nil {
+        return nil, err
+    }
+    
+    handlers["/rpc"] = rpcHandler
+    return handlers, nil
 }
+
+// GetObject retrieves object state from a specific region
+func (vm *ShuttleVM) GetObject(ctx context.Context, objectID string, regionID string) (*core.ObjectState, error) {
+    if vm.stateManager == nil {
+        return nil, fmt.Errorf("state manager not initialized")
+    }
+
+    obj, err := vm.stateManager.GetObject(ctx, vm.stateManager, objectID, regionID)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get object: %w", err)
+    }
+    
+    return obj, nil
+}
+
+// GetValidEnclave retrieves enclave information
+func (vm *ShuttleVM) GetValidEnclave(ctx context.Context, enclaveID string, regionID string) (*core.EnclaveInfo, error) {
+    if vm.stateManager == nil {
+        return nil, fmt.Errorf("state manager not initialized")
+    }
+
+    info, err := vm.stateManager.GetValidEnclave(
+        ctx,
+        vm.stateManager,
+        []byte(enclaveID),
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to get enclave info: %w", err)
+    }
+
+    return info, nil
+}
+
+// GetRegionWorkers returns the list of workers in a region
+func (vm *ShuttleVM) GetRegionWorkers(ctx context.Context, regionID string) ([]*Worker, error) {
+    if vm.coordinator == nil {
+        return nil, fmt.Errorf("coordinator not initialized")
+    }
+
+    workers := make([]*Worker, 0)
+    for _, workerID := range vm.coordinator.GetWorkerIDs() {
+        worker := &Worker{
+            ID: string(workerID),
+            // Add other worker info as needed
+        }
+        workers = append(workers, worker)
+    }
+
+    return workers, nil
+}
+
+// GetRegionTasks returns the list of tasks in a region
+func (vm *ShuttleVM) GetRegionTasks(ctx context.Context, regionID string) ([]*Task, error) {
+    if vm.coordinator == nil {
+        return nil, fmt.Errorf("coordinator not initialized")
+    }
+
+    // Implementation will depend on how you track tasks
+    tasks := make([]*Task, 0)
+    // Add logic to get tasks for the region
+    
+    return tasks, nil
+}
+
+
 
 func (vm *ShuttleVM) CreateStaticHandlers(context.Context) (map[string]http.Handler, error) {
     return map[string]http.Handler{}, nil

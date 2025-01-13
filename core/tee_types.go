@@ -2,18 +2,20 @@
 package core
 
 import (
-    "time"
 	"bytes"
 	"errors"
-    "github.com/ava-labs/hypersdk/codec"
+	"fmt"
+	"time"
+
+	"github.com/ava-labs/hypersdk/codec"
 )
 
 // TEE platform types
 type TEEType uint8
 
 const (
-    TEETypeSGX TEEType = iota + 1
-    TEETypeSEV
+    TEETypeSGX = "SGX"
+    TEETypeSEV = "SEV"
 )
 
 type TEEAddress []byte
@@ -90,6 +92,49 @@ func (t *TEEAttestation) Equal(other *TEEAttestation) bool {
         bytes.Equal(t.Signature, other.Signature) &&
         bytes.Equal(t.RegionProof, other.RegionProof)
 }
+
+type EnclaveInfo struct {
+    EnclaveID   []byte    `serialize:"true" json:"enclave_id"`
+    Measurement []byte    `serialize:"true" json:"measurement"`
+    ValidFrom   time.Time `serialize:"true" json:"valid_from"`
+    ValidUntil  time.Time `serialize:"true" json:"valid_until"`
+    EnclaveType string    `serialize:"true" json:"enclave_type"` // "SGX" or "SEV"
+    RegionID    string    `serialize:"true" json:"region_id"`
+    Status      string    `serialize:"true" json:"status"`
+}
+
+// Add validation method
+func (e *EnclaveInfo) Validate() error {
+    if len(e.EnclaveID) == 0 {
+        return ErrInvalidEnclaveID
+    }
+    if len(e.Measurement) == 0 {
+        return ErrInvalidMeasurement
+    }
+    if e.ValidFrom.IsZero() || e.ValidUntil.IsZero() {
+        return ErrInvalidTimestamp
+    }
+    if e.ValidFrom.After(e.ValidUntil) {
+        return fmt.Errorf("invalid validity period: start after end")
+    }
+    if e.EnclaveType != TEETypeSGX && e.EnclaveType != TEETypeSEV {
+        return fmt.Errorf("%w: %s", ErrInvalidTEEType, e.EnclaveType)
+    }
+    if e.RegionID == "" {
+        return fmt.Errorf("missing region ID")
+    }
+    return nil
+}
+
+// Add helper methods
+func (e *EnclaveInfo) IsValid(at time.Time) bool {
+    return !at.Before(e.ValidFrom) && !at.After(e.ValidUntil)
+}
+
+func (e *EnclaveInfo) GetType() string {
+    return e.EnclaveType
+}
+
 
 // Common TEE errors
 var (

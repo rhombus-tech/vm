@@ -24,46 +24,44 @@ var transferCmd = &cobra.Command{
     Use: "transfer",
     RunE: func(*cobra.Command, []string) error {
         ctx := context.Background()
-        // Update to match 6 return values instead of 7
-        priv, factory, cli, vmClient, ws, err := handler.DefaultActor()
+        
+        // Match the 6 return values from DefaultActor
+        priv, factory, standardClient, apiClient, wsClient, err := handler.DefaultActor()
         if err != nil {
             return err
         }
 
-        // Get balance info
-        balance, err := handler.GetBalance(ctx, vmClient, priv.Address)
+        // Use apiClient for balance
+        balance, err := handler.GetBalance(ctx, priv.Address, apiClient)
         if balance == 0 || err != nil {
             return err
         }
 
-        // Select recipient
         recipient, err := prompt.Address("recipient")
         if err != nil {
             return err
         }
 
-        // Select amount
         amount, err := prompt.Amount("amount", balance, nil)
         if err != nil {
             return err
         }
 
-        // Confirm action
         cont, err := prompt.Continue()
         if !cont || err != nil {
             return err
         }
 
-        // Generate transaction
+        // Match the sendAndWait parameter order
         _, _, err = sendAndWait(
             ctx,
             []chain.Action{&actions.Transfer{
                 To:    recipient,
                 Value: amount,
             }},
-            cli,
-            vmClient,
-            ws,
+            standardClient,
+            apiClient,
+            wsClient,
             factory,
             true,
         )

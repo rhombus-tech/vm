@@ -31,6 +31,22 @@ type JSONRPCClient struct {
     }
 }
 
+type Object struct {
+    Code        []byte    `json:"code"`
+    Storage     []byte    `json:"storage"`
+    Status      string    `json:"status"`
+    LastUpdated time.Time `json:"last_updated"`
+}
+
+// EnclaveInfo type for RPC responses
+type EnclaveInfo struct {
+    Measurement []byte    `json:"measurement"`
+    ValidFrom   time.Time `json:"valid_from"`
+    ValidUntil  time.Time `json:"valid_until"`
+    EnclaveType string    `json:"enclave_type"`
+    RegionID    string    `json:"region_id"`
+}
+
 type RegionResponse struct {
     ID                string   `json:"id"`
     CreatedAt         string   `json:"created_at"`
@@ -38,6 +54,7 @@ type RegionResponse struct {
     SupportedTeeTypes []string `json:"supported_tee_types"`
     MaxTasks         uint32   `json:"max_tasks"`
 }
+
 
 
 // NewJSONRPCClient creates a new client object.

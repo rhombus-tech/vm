@@ -1,19 +1,24 @@
 package compute
 
 import (
-    "bytes"
-    "context"
-    "errors"
-    "fmt"
-    "io/ioutil"
-    "os"
-    "sync"
-    "time"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
-    "github.com/rhombus-tech/vm/coordination"
-    "github.com/rhombus-tech/vm/core"
-    pb "github.com/rhombus-tech/vm/tee/proto"
-    "github.com/rhombus-tech/vm/tee"
+	"github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/tee"
+	pb "github.com/rhombus-tech/vm/tee/proto"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -231,6 +236,49 @@ func (n *ComputeNode) executeTEE(ctx context.Context, req *pb.ExecutionRequest) 
     }
     
     return result, nil
+}
+
+func (n *ComputeNode) Start(port string) error {
+    lis, err := net.Listen("tcp", ":"+port)
+    if err != nil {
+        return fmt.Errorf("failed to listen: %w", err)
+    }
+
+    s := grpc.NewServer()
+    pb.RegisterTeeExecutionServer(s, n)
+
+    // Handle shutdown gracefully
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    // Set up signal handling
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+    // Handle shutdown in goroutine
+    go func() {
+        <-sigCh
+        log.Println("Shutting down compute node...")
+        cancel()
+        s.GracefulStop()
+    }()
+
+    // Use context to control server shutdown
+    go func() {
+        <-ctx.Done()
+        s.GracefulStop()
+    }()
+
+    log.Printf("Compute node starting on port %s for region %s", port, n.regionID)
+    if err := s.Serve(lis); err != nil {
+        if ctx.Err() != nil {
+            log.Printf("Server stopped due to context cancellation")
+            return nil
+        }
+        return fmt.Errorf("failed to serve: %w", err)
+    }
+
+    return nil
 }
 
 // Update Execute to use conversions

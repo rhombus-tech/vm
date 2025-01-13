@@ -4,6 +4,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	// Provided by HyperSDK
@@ -153,5 +154,56 @@ func (j *JSONRPCServer) Execute(req *http.Request, args *ExecuteArgs, reply *Exe
     reply.Output = output
     reply.Timestamp = timestamp
 
+    return nil
+}
+
+func (j *JSONRPCServer) GetObject(r *http.Request, args *struct {
+    ObjectID string `json:"object_id"`
+    RegionID string `json:"region_id"`
+}, reply *struct {
+    Object *Object `json:"object"`
+}) error {
+    ctx := r.Context()
+    
+    // Cast to your VM implementation that can access state
+    vmImpl, ok := j.vm.(interface {
+        GetObject(context.Context, string, string) (*Object, error)
+    })
+    if !ok {
+        return fmt.Errorf("VM does not implement GetObject")
+    }
+
+    obj, err := vmImpl.GetObject(ctx, args.ObjectID, args.RegionID)
+    if err != nil {
+        return err
+    }
+
+    reply.Object = obj
+    return nil
+}
+
+// GetValidEnclave handles enclave.get RPC requests
+func (j *JSONRPCServer) GetValidEnclave(r *http.Request, args *struct {
+    EnclaveID string `json:"enclave_id"`
+    RegionID  string `json:"region_id"`
+}, reply *struct {
+    EnclaveInfo *EnclaveInfo `json:"enclave_info"`
+}) error {
+    ctx := r.Context()
+    
+    // Cast to your VM implementation that can access state
+    vmImpl, ok := j.vm.(interface {
+        GetValidEnclave(context.Context, string, string) (*EnclaveInfo, error)
+    })
+    if !ok {
+        return fmt.Errorf("VM does not implement GetValidEnclave")
+    }
+
+    info, err := vmImpl.GetValidEnclave(ctx, args.EnclaveID, args.RegionID)
+    if err != nil {
+        return err
+    }
+
+    reply.EnclaveInfo = info
     return nil
 }
