@@ -5,7 +5,6 @@ go 1.22.5
 require (
 	github.com/ava-labs/avalanchego v1.11.12-rc.2.0.20241001202925-f03745d187d0
 	github.com/ava-labs/hypersdk v0.0.18-0.20241011004749-6f15b2f26e77
-	github.com/cloudflare/roughtime v0.0.0-20241210180848-8b34bf166fa6
 	github.com/fatih/color v1.13.0
 	github.com/gorilla/mux v1.8.0
 	github.com/onsi/ginkgo/v2 v2.13.1

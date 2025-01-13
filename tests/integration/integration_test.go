@@ -17,6 +17,7 @@ import (
     "github.com/rhombus-tech/vm/core"
     "github.com/rhombus-tech/vm/tee"
     "github.com/rhombus-tech/vm/verifier"
+    "github.com/rhombus-tech/vm/mocks"
 )
 
 type TEEExecutor interface {
@@ -60,17 +61,47 @@ func (m *mockTEE) Execute(_ context.Context, input []byte) (*core.ExecutionResul
     m.mu.Lock()
     defer m.mu.Unlock()
 
-    result := &core.ExecutionResult{
-        Output:       []byte("test result"),
-        StateHash:    []byte("test-state-hash"),
-        Attestations: m.attestations,
-        Timestamp:    time.Now().UTC(),
-    }
-    
-    resultID := string(input)
-    m.results[resultID] = result
-    
-    return result, nil
+    timeProof := &timeserver.VerifiedTimestamp{
+    Time: time.Now(),
+    Proofs: []*timeserver.TimestampProof{
+        {
+            ServerID:  "server1",
+            Signature: []byte("signature1"),
+            Delay:     100 * time.Millisecond,
+        },
+        {
+            ServerID:  "server2",
+            Signature: []byte("signature2"),
+            Delay:     100 * time.Millisecond,
+        },
+    },
+    RegionID:   "test-region",
+    QuorumSize: 2,
+}
+
+result := &core.ExecutionResult{
+    Output:       []byte("test output"),
+    StateHash:    []byte("test hash"),
+    TimeProof:    timeProof,
+    RegionID:     "test-region",
+    Attestations: [2]core.TEEAttestation{
+        {
+            EnclaveID:   []byte("sgx-enclave"),
+            Measurement: []byte("measurement1"),
+            Timestamp:   timeProof.Time,
+            Data:        []byte("data1"),
+            Signature:   []byte("sig1"),
+            RegionProof: []byte("region-proof1"),
+        },
+        {
+            EnclaveID:   []byte("sev-enclave"),
+            Measurement: []byte("measurement2"),
+            Timestamp:   timeProof.Time,
+            Data:        []byte("data2"),
+            Signature:   []byte("sig2"),
+            RegionProof: []byte("region-proof2"),
+        },
+    },
 }
 
 type MockVM struct {

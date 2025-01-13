@@ -9,6 +9,9 @@ import (
     "github.com/rhombus-tech/vm/core"
 )
 
+//go:generate go run github.com/golang/mock/mockgen@v1.6.0 -destination=mocks/mock_state_manager.go -package=mocks -source=$GOFILE
+//go:generate go run github.com/golang/mock/mockgen@v1.6.0 -destination=mocks/mock_vm.go -package=mocks -source=$GOFILE
+
 type StateManager interface {
     chain.StateManager
     
@@ -34,7 +37,6 @@ type StateManager interface {
     GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]byte, error)
 }
 
-// VM extends the chain.VM interface to add coordination capabilities
 type VM interface {
     chain.VM
 

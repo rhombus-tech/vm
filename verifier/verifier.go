@@ -257,28 +257,29 @@ func (v *StateVerifier) VerifyExecution(ctx context.Context, result *core.Execut
         return fmt.Errorf("attestation verification failed: %w", err)
     }
 
-    // Verify timestamp
-    if err := v.verifyTimestamp(result.Timestamp); err != nil {
-        return fmt.Errorf("timestamp verification failed: %w", err)
+    // Verify TimeProof instead of Timestamp
+    if err := v.verifyTimeProof(result.TimeProof); err != nil {
+        return fmt.Errorf("time proof verification failed: %w", err)
     }
 
     return nil
 }
 
-func (v *StateVerifier) verifyTimestamp(timestamp *timeserver.VerifiedTimestamp) error {
-    if timestamp == nil {
-        return fmt.Errorf("missing timestamp")
+// Update the verification method to handle TimeProof
+func (v *StateVerifier) verifyTimeProof(timeProof *timeserver.VerifiedTimestamp) error {
+    if timeProof == nil {
+        return fmt.Errorf("missing time proof")
     }
 
     // Verify we have enough proofs
-    if len(timestamp.Proofs) < 2 {
-        return fmt.Errorf("insufficient timestamp proofs")
+    if len(timeProof.Proofs) < 2 {
+        return fmt.Errorf("insufficient time proofs")
     }
 
-    // Verify timestamp is recent
-    age := time.Since(timestamp.Time)
+    // Verify time is recent
+    age := time.Since(timeProof.Time)
     if age > 5*time.Second {
-        return fmt.Errorf("timestamp too old: %v", age)
+        return fmt.Errorf("time proof too old: %v", age)
     }
 
     return nil
