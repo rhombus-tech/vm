@@ -2,12 +2,14 @@
 package jsonrpc
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/codec"
-    "github.com/ava-labs/hypersdk/requester"
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/requester"
+	"github.com/rhombus-tech/vm/core"
 )
 
 type JSONRPCClient struct {
@@ -75,6 +77,42 @@ func (c *JSONRPCClient) GetRegions(ctx context.Context) (*GetRegionsResponse, er
     return resp, err
 }
 
+func (c *JSONRPCClient) GetRegionWorkers(ctx context.Context, regionID string) ([]*Worker, error) {
+    req := &GetRegionWorkersRequest{
+        RegionID: regionID,
+    }
+    resp := new(GetRegionWorkersResponse)
+    
+    err := c.requester.SendRequest(
+        ctx,
+        "coord.workers",
+        req,
+        resp,
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to get workers: %w", err)
+    }
+    return resp.Workers, nil
+}
+
+func (c *JSONRPCClient) GetRegionTasks(ctx context.Context, regionID string) ([]*Task, error) {
+    req := &GetRegionTasksRequest{
+        RegionID: regionID,
+    }
+    resp := new(GetRegionTasksResponse)
+    
+    err := c.requester.SendRequest(
+        ctx,
+        "coord.tasks",
+        req,
+        resp,
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to get tasks: %w", err)
+    }
+    return resp.Tasks, nil
+}
+
 // GetRegionAttestations gets attestations for a specific region
 func (c *JSONRPCClient) GetRegionAttestations(ctx context.Context, regionID string) ([]*TEEAttestation, error) {
     resp := new(struct {
@@ -111,6 +149,65 @@ type TEEAttestation struct {
     Data        []byte `json:"data"`
     Signature   []byte `json:"signature"`
     RegionProof []byte `json:"region_proof"`
+}
+
+// Request types
+type GetObjectRequest struct {
+    ObjectID string `json:"object_id"`
+    RegionID string `json:"region_id"`
+}
+
+type GetEnclaveRequest struct {
+    EnclaveID string `json:"enclave_id"`
+    RegionID  string `json:"region_id"`
+}
+
+// Response types
+type GetObjectResponse struct {
+    Object *core.ObjectState `json:"object"`
+}
+
+type GetEnclaveResponse struct {
+    EnclaveInfo *core.EnclaveInfo `json:"enclave_info"`
+}
+
+func (c *JSONRPCClient) GetObject(ctx context.Context, objectID string, regionID string) (*core.ObjectState, error) {
+    req := &GetObjectRequest{
+        ObjectID: objectID,
+        RegionID: regionID,
+    }
+    resp := new(GetObjectResponse)
+    
+    err := c.requester.SendRequest(
+        ctx,
+        "object.get",
+        req,
+        resp,
+    )
+    if err != nil {
+        return nil, err
+    }
+    return resp.Object, nil
+}
+
+
+func (c *JSONRPCClient) GetValidEnclave(ctx context.Context, enclaveID string, regionID string) (*core.EnclaveInfo, error) {
+    req := &GetEnclaveRequest{
+        EnclaveID: enclaveID,
+        RegionID: regionID,
+    }
+    resp := new(GetEnclaveResponse)
+    
+    err := c.requester.SendRequest(
+        ctx,
+        "enclave.get",
+        req,
+        resp,
+    )
+    if err != nil {
+        return nil, err
+    }
+    return resp.EnclaveInfo, nil
 }
 
 // GenerateTransaction wraps the standard transaction generation
