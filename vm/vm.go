@@ -82,21 +82,80 @@ func (vm *ShuttleVM) initializeValidators() {
 }
 
 func (vm *ShuttleVM) GetRegionWorkers(ctx context.Context, regionID string) ([]*jsonrpc.Worker, error) {
-    // Implement logic to get workers from your coordination system
+    if vm.coordinator == nil {
+        return nil, fmt.Errorf("coordinator not initialized")
+    }
+
     workers := make([]*jsonrpc.Worker, 0)
-    // Get workers from your coordination system
-    // Example:
-    // workers = vm.coordinator.GetWorkers(regionID)
+    for _, id := range vm.coordinator.GetWorkerIDs() {
+        if worker, exists := vm.coordinator.GetWorker(id); exists {
+            // Create jsonrpc.Worker with available information
+            workers = append(workers, &jsonrpc.Worker{
+                ID:           string(worker.ID),
+                EnclaveType: determineEnclaveType(worker.EnclaveID),
+                Status:      string(worker.Status),
+                ActiveSince: time.Now(), // For now, just use current time
+                TasksHandled: 0,         // Default to 0 until we implement tracking
+            })
+        }
+    }
+
     return workers, nil
 }
 
+
+
+type RegionWorkerInfo struct {
+    ID        string `json:"id"`
+    EnclaveID []byte `json:"enclave_id"`
+    Status    string `json:"status"`
+}
+
 func (vm *ShuttleVM) GetRegionTasks(ctx context.Context, regionID string) ([]*jsonrpc.Task, error) {
-    // Implement logic to get tasks from your coordination system
+    if vm.coordinator == nil {
+        return nil, fmt.Errorf("coordinator not initialized")
+    }
+
     tasks := make([]*jsonrpc.Task, 0)
-    // Get tasks from your coordination system
-    // Example:
-    // tasks = vm.coordinator.GetTasks(regionID)
+    
+    // For now, create a single task per worker to show activity
+    for _, id := range vm.coordinator.GetWorkerIDs() {
+        if worker, exists := vm.coordinator.GetWorker(id); exists {
+            tasks = append(tasks, &jsonrpc.Task{
+                ID:        fmt.Sprintf("task-%s", worker.ID),
+                Status:    string(worker.Status),
+                CreatedAt: time.Now(),
+                WorkerIDs: []string{string(worker.ID)},
+                Progress:  1.0,
+                Error:     "",
+            })
+        }
+    }
+    
     return tasks, nil
+}
+
+// Helper function to determine enclave type from enclave ID
+func determineEnclaveType(enclaveID []byte) string {
+    if len(enclaveID) > 3 {
+        prefix := string(enclaveID[:3])
+        switch prefix {
+        case "sgx":
+            return "SGX"
+        case "sev":
+            return "SEV"
+        }
+    }
+    return "UNKNOWN"
+}
+
+
+// Add this struct to define the task info response type
+type RegionTaskInfo struct {
+    ID        string    `json:"id"`
+    RegionID  string    `json:"region_id"`
+    Status    string    `json:"status"`
+    Started   time.Time `json:"started"`
 }
 
 
@@ -247,40 +306,15 @@ func (vm *ShuttleVM) GetValidEnclave(ctx context.Context, enclaveID string, regi
         return nil, fmt.Errorf("failed to get enclave info: %w", err)
     }
 
-    return info, nil
+    // Convert storage.EnclaveInfo to core.EnclaveInfo
+    return &core.EnclaveInfo{
+        Measurement: info.Measurement,
+        ValidFrom:   info.ValidFrom,
+        ValidUntil:  info.ValidUntil,
+        EnclaveType: info.EnclaveType,
+        RegionID:    info.RegionID,
+    }, nil
 }
-
-// GetRegionWorkers returns the list of workers in a region
-func (vm *ShuttleVM) GetRegionWorkers(ctx context.Context, regionID string) ([]*Worker, error) {
-    if vm.coordinator == nil {
-        return nil, fmt.Errorf("coordinator not initialized")
-    }
-
-    workers := make([]*Worker, 0)
-    for _, workerID := range vm.coordinator.GetWorkerIDs() {
-        worker := &Worker{
-            ID: string(workerID),
-            // Add other worker info as needed
-        }
-        workers = append(workers, worker)
-    }
-
-    return workers, nil
-}
-
-// GetRegionTasks returns the list of tasks in a region
-func (vm *ShuttleVM) GetRegionTasks(ctx context.Context, regionID string) ([]*Task, error) {
-    if vm.coordinator == nil {
-        return nil, fmt.Errorf("coordinator not initialized")
-    }
-
-    // Implementation will depend on how you track tasks
-    tasks := make([]*Task, 0)
-    // Add logic to get tasks for the region
-    
-    return tasks, nil
-}
-
 
 
 func (vm *ShuttleVM) CreateStaticHandlers(context.Context) (map[string]http.Handler, error) {

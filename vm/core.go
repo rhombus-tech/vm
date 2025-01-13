@@ -13,11 +13,13 @@ import (
 	"github.com/ava-labs/avalanchego/snow"
 	"github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/logging"
+	"github.com/ava-labs/avalanchego/x/merkledb"
 	"github.com/ava-labs/hypersdk/chain"
 	"go.uber.org/zap"
 
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/compute"
+	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/regions"
 	"github.com/rhombus-tech/vm/storage"
@@ -40,6 +42,7 @@ type ShuttleVM struct {
     teeValidator *Validator
     validatorMgr *validatorManager
     regionManager *regions.RegionManager
+    coordinator  *coordination.Coordinator
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
@@ -84,7 +87,6 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
     return vm, nil
 }
 
-// In vm/core.go
 
 func (vm *ShuttleVM) Initialize(
     ctx context.Context,
@@ -108,22 +110,59 @@ func (vm *ShuttleVM) Initialize(
         return fmt.Errorf("failed to parse config: %w", err)
     }
 
+    // Initialize MerkleDB
+    merkleDB, err := merkledb.New(
+        ctx,
+        db,
+        merkledb.Config{
+            // Remove TracingEnabled and ValueCacheSize as they're not in the Config
+            HistoryLength: 256,
+        },
+    )
+    if err != nil {
+        return fmt.Errorf("failed to create merkledb: %w", err)
+    }
+
     // Create database wrapper that implements state.Mutable
     dbWrapper := storage.NewDatabaseWrapper(db)
 
-    // Set up state manager
-    stateManager, err := storage.NewStateManager(dbWrapper, nil) // Pass nil for merkleDB if not needed
+    // Set up state manager with merkleDB
+    stateManager, err := storage.NewStateManager(dbWrapper, merkleDB)
     if err != nil {
         return fmt.Errorf("failed to create state manager: %w", err)
     }
     vm.stateManager = stateManager
 
-    // Set state manager for verifier
-    if vm.verifier == nil {
-        vm.verifier = verifier.New(dbWrapper) // Use dbWrapper instead of stateManager
-    } else {
-        vm.verifier.SetState(dbWrapper) // Use dbWrapper instead of stateManager
+    // Initialize coordinator
+    coordConfig := &coordination.Config{
+        MinWorkers:         2,
+        MaxWorkers:         10,
+        WorkerTimeout:      30 * time.Second,
+        ChannelTimeout:     10 * time.Second,
+        MaxMessageSize:     1024 * 1024, // 1MB
+        EncryptionEnabled:  true,
+        RequireAttestation: true,
+        AttestationTimeout: 5 * time.Second,
+        StoragePath:        fmt.Sprintf("/tmp/coordinator-%s", vm.chainID),
+        PersistenceEnabled: true,
     }
+
+    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB)
+    if err != nil {
+        return fmt.Errorf("failed to create coordinator: %w", err)
+    }
+    vm.coordinator = coordinator
+
+    // Start coordinator
+    if err := vm.coordinator.Start(); err != nil {
+        return fmt.Errorf("failed to start coordinator: %w", err)
+    }
+
+    // Set up verifier with coordination-aware state management
+    if vm.verifier == nil {
+        vm.verifier = verifier.New(dbWrapper)
+    }
+    vm.verifier.SetState(dbWrapper)
 
     // Initialize compute node connections if not in verification-only mode
     if !vm.config.VerificationOnly {
@@ -132,15 +171,43 @@ func (vm *ShuttleVM) Initialize(
         }
     }
 
-    // Initialize validators
+    // Initialize validators with coordinator awareness
     vm.initializeValidators()
 
-    // Initialize region manager
+    // Initialize region manager with coordination support
     regionStore := storage.NewRegionStateStore(vm.stateManager)
     vm.regionManager = regions.NewRegionManager(regionStore)
 
+    // Register compute nodes as workers and set up regions
+    for regionID := range vm.computeNodes {
+        sgxWorkerID := coordination.WorkerID(fmt.Sprintf("sgx-%s", regionID))
+        sevWorkerID := coordination.WorkerID(fmt.Sprintf("sev-%s", regionID))
+
+        // Register SGX worker
+        if err := vm.coordinator.RegisterWorker(ctx, sgxWorkerID, []byte("sgx-enclave")); err != nil {
+            return fmt.Errorf("failed to register SGX worker for region %s: %w", regionID, err)
+        }
+
+        // Register SEV worker
+        if err := vm.coordinator.RegisterWorker(ctx, sevWorkerID, []byte("sev-enclave")); err != nil {
+            return fmt.Errorf("failed to register SEV worker for region %s: %w", regionID, err)
+        }
+
+        // Register region with worker pair
+        if err := vm.coordinator.RegisterRegion(ctx, regionID, [2]coordination.WorkerID{sgxWorkerID, sevWorkerID}); err != nil {
+            return fmt.Errorf("failed to register region %s: %w", regionID, err)
+        }
+
+        // Set up secure channel between workers
+        channel := coordination.NewSecureChannel(sgxWorkerID, sevWorkerID)
+        if err := channel.EstablishSecure(); err != nil {
+            return fmt.Errorf("failed to establish secure channel for region %s: %w", regionID, err)
+        }
+    }
+
     return nil
 }
+
 
 func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
     for region, client := range vm.computeNodes {
