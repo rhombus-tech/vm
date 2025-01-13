@@ -45,8 +45,8 @@ func init() {
 
 func createRegion(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    // Use handler to get the parser along with other components
-    chainID, priv, factory, cli, ws, parser, err := handler.DefaultActor()
+    // Get all necessary components
+    _, _, factory, cli, bcli, ws, err := handler.DefaultActor()
     if err != nil {
         return err
     }
@@ -54,14 +54,13 @@ func createRegion(_ *cobra.Command, args []string) error {
     // Get region ID from args
     regionID := args[0]
 
-    // Generate and send transaction
     cont, txID, err := sendAndWait(
         ctx,
         []chain.Action{&actions.CreateRegionAction{
             RegionID: regionID,
         }},
         cli,
-        parser, // Pass the parser 
+        bcli, // Correct type: *vm.JSONRPCClient
         ws,
         factory,
         true,
@@ -81,12 +80,13 @@ func createRegion(_ *cobra.Command, args []string) error {
 
 func listRegions(_ *cobra.Command, _ []string) error {
     ctx := context.Background()
-    _, _, _, _, bcli, _, err := handler.DefaultActor()
+    // Get bcli of correct type: *vm.JSONRPCClient
+    _, _, _, _, bcli, _, err := handler.DefaultActor() 
     if err != nil {
         return err
     }
 
-    // Get regions from VM
+    // bcli is *vm.JSONRPCClient which has GetRegions method
     resp, err := bcli.GetRegions(ctx)
     if err != nil {
         return err
@@ -99,9 +99,9 @@ func listRegions(_ *cobra.Command, _ []string) error {
 
     utils.Outf("{{cyan}}Regions:{{/}}\n")
     for _, region := range resp.Regions {
-        utils.Outf("- ID: %s\n", region.Id)  // Note: field might be 'Id' not 'ID'
+        utils.Outf("- ID: %s\n", region.Id)
         utils.Outf("  Created: %s\n", region.CreatedAt)
-        utils.Outf("  Worker Count: %d\n", len(region.WorkerIds))  // Note: field might be 'WorkerIds'
+        utils.Outf("  Worker Count: %d\n", len(region.WorkerIds))
     }
 
     return nil
@@ -151,14 +151,12 @@ func addTEE(_ *cobra.Command, args []string) error {
     sgxEndpoint := args[1] 
     sevEndpoint := args[2]
 
-    // Create update region action
     action := &actions.UpdateRegionAction{
         RegionID: regionID,
         SGXEndpoint: sgxEndpoint,
         SEVEndpoint: sevEndpoint,
     }
 
-    // Send transaction
     cont, txID, err := sendAndWait(
         ctx,
         []chain.Action{action},
@@ -189,6 +187,7 @@ func getAttestations(_ *cobra.Command, args []string) error {
     }
 
     regionID := args[0]
+    // bcli should be *vm.JSONRPCClient
     attestations, err := bcli.GetRegionAttestations(ctx, regionID)
     if err != nil {
         return err
@@ -197,13 +196,11 @@ func getAttestations(_ *cobra.Command, args []string) error {
     utils.Outf("{{cyan}}Region Attestations:{{/}}\n")
     
     if len(attestations) >= 2 {
-        // First attestation is SGX
         utils.Outf("SGX Attestation:\n")
         utils.Outf("  EnclaveID: %x\n", attestations[0].EnclaveId)
         utils.Outf("  Measurement: %x\n", attestations[0].Measurement)
         utils.Outf("  Timestamp: %s\n", attestations[0].Timestamp)
 
-        // Second attestation is SEV
         utils.Outf("\nSEV Attestation:\n")
         utils.Outf("  EnclaveID: %x\n", attestations[1].EnclaveId)
         utils.Outf("  Measurement: %x\n", attestations[1].Measurement)
@@ -214,6 +211,5 @@ func getAttestations(_ *cobra.Command, args []string) error {
     
     return nil
 }
-
 
 

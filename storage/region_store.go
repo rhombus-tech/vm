@@ -46,3 +46,4 @@ func (r *RegionStateStore) DeleteRegionConfig(regionID string) error {
     key := []byte(fmt.Sprintf("region/%s/config", regionID))
     return r.stateManager.Remove(ctx, key)
 }
+
