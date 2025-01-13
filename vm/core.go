@@ -4,19 +4,23 @@ package vm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/ava-labs/avalanchego/database"
 	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/snow"
+	"github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/logging"
 	"github.com/ava-labs/hypersdk/chain"
-	"github.com/ava-labs/hypersdk/state"
 	"go.uber.org/zap"
 
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/compute"
 	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/regions"
+	"github.com/rhombus-tech/vm/storage"
 	pb "github.com/rhombus-tech/vm/tee/proto/pb"
 	"github.com/rhombus-tech/vm/verifier"
 )
@@ -24,15 +28,18 @@ import (
 // ShuttleVM represents a validator node in the network
 type ShuttleVM struct {
     chainID       ids.ID
-    stateManager  state.Mutable
-    verifier      *verifier.StateVerifier
-    computeNodes  map[string]*compute.NodeClient // Map of regionID to compute node client
-    config        *Config
-    logger        logging.Logger
+    ctx          *snow.Context
+    db           database.Database
+    appSender    common.AppSender
+    stateManager *storage.StateManager  // Change to concrete type
+    verifier     *verifier.StateVerifier
+    computeNodes map[string]*compute.NodeClient
+    config       *Config
+    logger       logging.Logger
     codeValidator *CodeValidator                 
-    teeValidator  *Validator
+    teeValidator *Validator
     validatorMgr *validatorManager
-    db database.Database
+    regionManager *regions.RegionManager
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
@@ -77,16 +84,46 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
     return vm, nil
 }
 
+// In vm/core.go
+
 func (vm *ShuttleVM) Initialize(
     ctx context.Context,
-    chainID ids.ID,
-    stateManager state.Mutable,
+    snowCtx *snow.Context,
+    db database.Database,
+    genesisBytes []byte,
+    upgradeBytes []byte,
+    configBytes []byte,
+    toEngine chan<- common.Message,
+    fxs []*common.Fx,
+    appSender common.AppSender,
 ) error {
-    vm.chainID = chainID
+    // Store core dependencies
+    vm.ctx = snowCtx
+    vm.db = db
+    vm.appSender = appSender
+    vm.chainID = snowCtx.ChainID
+
+    // Parse config
+    if err := json.Unmarshal(configBytes, &vm.config); err != nil {
+        return fmt.Errorf("failed to parse config: %w", err)
+    }
+
+    // Create database wrapper that implements state.Mutable
+    dbWrapper := storage.NewDatabaseWrapper(db)
+
+    // Set up state manager
+    stateManager, err := storage.NewStateManager(dbWrapper, nil) // Pass nil for merkleDB if not needed
+    if err != nil {
+        return fmt.Errorf("failed to create state manager: %w", err)
+    }
     vm.stateManager = stateManager
-    
+
     // Set state manager for verifier
-    vm.verifier.SetState(stateManager)
+    if vm.verifier == nil {
+        vm.verifier = verifier.New(dbWrapper) // Use dbWrapper instead of stateManager
+    } else {
+        vm.verifier.SetState(dbWrapper) // Use dbWrapper instead of stateManager
+    }
 
     // Initialize compute node connections if not in verification-only mode
     if !vm.config.VerificationOnly {
@@ -95,11 +132,15 @@ func (vm *ShuttleVM) Initialize(
         }
     }
 
+    // Initialize validators
     vm.initializeValidators()
+
+    // Initialize region manager
+    regionStore := storage.NewRegionStateStore(vm.stateManager)
+    vm.regionManager = regions.NewRegionManager(regionStore)
 
     return nil
 }
-
 
 func (vm *ShuttleVM) initializeComputeConnections(ctx context.Context) error {
     for region, client := range vm.computeNodes {

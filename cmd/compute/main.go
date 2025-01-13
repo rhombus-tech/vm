@@ -12,7 +12,7 @@ import (
 
     "google.golang.org/grpc"
     "github.com/rhombus-tech/vm/compute"
-    pb "github.com/rhombus-tech/vm/tee/proto/pb"
+    pb "github.com/rhombus-tech/vm/tee/proto"
 )
 
 func main() {
@@ -30,10 +30,16 @@ func main() {
     config.ControllerPath = *controllerPath
     config.WasmPath = *wasmPath
 
+    // Create root context for server lifecycle
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    // Create compute node without passing context
     node, err := compute.NewComputeNode(*regionID, config)
     if err != nil {
         log.Fatalf("Failed to create compute node: %v", err)
     }
+    defer node.Close()
 
     lis, err := net.Listen("tcp", ":"+*port)
     if err != nil {
@@ -44,19 +50,26 @@ func main() {
     pb.RegisterTeeExecutionServer(s, node)
 
     // Handle shutdown gracefully
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-
     go func() {
         sigCh := make(chan os.Signal, 1)
         signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
         <-sigCh
+        cancel() // Cancel context
         s.GracefulStop()
-        cancel()
+    }()
+
+    // Use context to control server shutdown
+    go func() {
+        <-ctx.Done()
+        s.GracefulStop()
     }()
 
     log.Printf("Compute node starting on port %s", *port)
     if err := s.Serve(lis); err != nil {
-        log.Fatalf("Failed to serve: %v", err)
+        if ctx.Err() != nil {
+            log.Printf("Server stopped due to context cancellation")
+        } else {
+            log.Fatalf("Failed to serve: %v", err)
+        }
     }
 }
