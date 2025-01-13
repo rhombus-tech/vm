@@ -30,6 +30,8 @@ type StateManager interface {
 
     // Coordination
     GetCoordinator() *coordination.Coordinator
+
+    GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]byte, error)
 }
 
 // VM extends the chain.VM interface to add coordination capabilities

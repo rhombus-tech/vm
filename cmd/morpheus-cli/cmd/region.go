@@ -45,13 +45,14 @@ func init() {
 
 func createRegion(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    // Get all necessary components
-    _, _, factory, cli, bcli, ws, err := handler.DefaultActor()
+    // Capture DefaultActor return values with their actual types
+    jsonRpcClient, vmJsonRpcClient, auth, client, webSocket, err := handler.DefaultActor() 
     if err != nil {
         return err
     }
 
-    // Get region ID from args
+    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
+
     regionID := args[0]
 
     cont, txID, err := sendAndWait(
@@ -59,10 +60,10 @@ func createRegion(_ *cobra.Command, args []string) error {
         []chain.Action{&actions.CreateRegionAction{
             RegionID: regionID,
         }},
-        cli,
-        bcli, // Correct type: *vm.JSONRPCClient
-        ws,
-        factory,
+        jsonRpcClient,
+        vmClient,
+        webSocket,
+        auth, // Use auth as the AuthFactory
         true,
     )
     if err != nil {
@@ -80,14 +81,14 @@ func createRegion(_ *cobra.Command, args []string) error {
 
 func listRegions(_ *cobra.Command, _ []string) error {
     ctx := context.Background()
-    // Get bcli of correct type: *vm.JSONRPCClient
-    _, _, _, _, bcli, _, err := handler.DefaultActor() 
+    // Get all values and check error
+    _, _, _, client, _, err := handler.DefaultActor()
     if err != nil {
         return err
     }
 
-    // bcli is *vm.JSONRPCClient which has GetRegions method
-    resp, err := bcli.GetRegions(ctx)
+    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
+    resp, err := vmClient.GetRegions(ctx)
     if err != nil {
         return err
     }
@@ -142,10 +143,12 @@ func init() {
 
 func addTEE(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    _, _, factory, cli, bcli, ws, err := handler.DefaultActor()
+    jsonRpcClient, vmJsonRpcClient, auth, client, webSocket, err := handler.DefaultActor()
     if err != nil {
         return err
     }
+
+    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
 
     regionID := args[0]
     sgxEndpoint := args[1] 
@@ -160,10 +163,10 @@ func addTEE(_ *cobra.Command, args []string) error {
     cont, txID, err := sendAndWait(
         ctx,
         []chain.Action{action},
-        cli,
-        bcli,
-        ws,
-        factory,
+        jsonRpcClient,
+        vmClient,
+        webSocket,
+        auth,
         true,
     )
     if err != nil {
@@ -181,14 +184,15 @@ func addTEE(_ *cobra.Command, args []string) error {
 
 func getAttestations(_ *cobra.Command, args []string) error {
     ctx := context.Background()
-    _, _, _, _, bcli, _, err := handler.DefaultActor()
+    _, _, _, client, _, err := handler.DefaultActor()
     if err != nil {
         return err
     }
 
+    vmClient := client.(*vm.JSONRPCClient) // Cast client to vm.JSONRPCClient
+    
     regionID := args[0]
-    // bcli should be *vm.JSONRPCClient
-    attestations, err := bcli.GetRegionAttestations(ctx, regionID)
+    attestations, err := vmClient.GetRegionAttestations(ctx, regionID)
     if err != nil {
         return err
     }
@@ -211,5 +215,3 @@ func getAttestations(_ *cobra.Command, args []string) error {
     
     return nil
 }
-
-

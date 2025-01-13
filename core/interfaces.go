@@ -29,6 +29,8 @@ type StateManager interface {
     
     // Coordination
     GetCoordinator() Coordinator
+
+    GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]byte, error)
 }
 
 // Coordinator interface
