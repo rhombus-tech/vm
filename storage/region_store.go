@@ -2,13 +2,17 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ava-labs/hypersdk/state"
 	"github.com/rhombus-tech/vm/regions"
+    "github.com/ava-labs/avalanchego/x/merkledb"
 )
 
 // RegionMetric defines a region metric
@@ -143,3 +147,137 @@ func isValidRegionID(id string) bool {
     }
     return !strings.ContainsAny(id, "/\\?#[]{}") 
 }
+
+type RegionalStateManager struct {
+    stores       map[string]*MerkleStore
+    mu           sync.RWMutex
+    backingStore state.Mutable
+    db           merkledb.MerkleDB
+}
+
+type MerkleStore struct {
+    db           merkledb.MerkleDB
+    regionID     string
+    lastHash     []byte
+    updateCount  uint64
+    mu           sync.RWMutex
+}
+
+func NewRegionalStateManager(db merkledb.MerkleDB, backing state.Mutable) *RegionalStateManager {
+    return &RegionalStateManager{
+        stores:       make(map[string]*MerkleStore),
+        backingStore: backing,
+        db:          db,
+    }
+}
+
+func NewMerkleStore(db merkledb.MerkleDB, regionID string) *MerkleStore {
+    return &MerkleStore{
+        db:          db,
+        regionID:    regionID,
+        updateCount: 0,
+    }
+}
+
+// Enhanced regional store management
+func (rsm *RegionalStateManager) GetRegionalStore(regionID string) (*MerkleStore, error) {
+    rsm.mu.RLock()
+    store, exists := rsm.stores[regionID]
+    rsm.mu.RUnlock()
+    
+    if exists {
+        return store, nil
+    }
+
+    // Create new store if doesn't exist
+    rsm.mu.Lock()
+    defer rsm.mu.Unlock()
+    
+    // Double check after acquiring write lock
+    if store, exists = rsm.stores[regionID]; exists {
+        return store, nil
+    }
+
+    store = NewMerkleStore(rsm.db, regionID)
+    rsm.stores[regionID] = store
+    return store, nil
+}
+
+// Regional state operations
+func (ms *MerkleStore) Insert(ctx context.Context, key []byte, value []byte) error {
+    ms.mu.Lock()
+    defer ms.mu.Unlock()
+
+    // Create region-specific key
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    
+    if err := ms.db.Insert(regionalKey, value); err != nil {
+        return fmt.Errorf("failed to insert: %w", err)
+    }
+
+    // Update merkle root after modification
+    if err := ms.updateMerkleRoot(); err != nil {
+        return fmt.Errorf("failed to update merkle root: %w", err)
+    }
+
+    ms.updateCount++
+    return nil
+}
+
+func (ms *MerkleStore) Get(ctx context.Context, key []byte) ([]byte, error) {
+    ms.mu.RLock()
+    defer ms.mu.RUnlock()
+
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    return ms.db.Get(regionalKey)
+}
+
+func (ms *MerkleStore) Delete(ctx context.Context, key []byte) error {
+    ms.mu.Lock()
+    defer ms.mu.Unlock()
+
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    if err := ms.db.Delete(regionalKey); err != nil {
+        return err
+    }
+
+    return ms.updateMerkleRoot()
+}
+
+// Merkle proof generation
+func (ms *MerkleStore) GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error) {
+    ms.mu.RLock()
+    defer ms.mu.RUnlock()
+
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    return ms.db.GetProof(regionalKey)
+}
+
+// State verification
+func (ms *MerkleStore) VerifyStateUpdate(proof *merkledb.Proof, oldRoot, newRoot []byte) error {
+    if !bytes.Equal(proof.RootHash, oldRoot) {
+        return fmt.Errorf("invalid old root hash")
+    }
+
+    // Verify the proof leads to new root
+    if err := merkledb.VerifyProof(proof, newRoot); err != nil {
+        return fmt.Errorf("proof verification failed: %w", err)
+    }
+
+    return nil
+}
+
+// Helper functions
+func makeRegionalKey(regionID string, key []byte) []byte {
+    return []byte(fmt.Sprintf("r/%s/%s", regionID, key))
+}
+
+func (ms *MerkleStore) updateMerkleRoot() error {
+    root, err := ms.db.GetMerkleRoot()
+    if err != nil {
+        return err
+    }
+    ms.lastHash = root
+    return nil
+}
+
