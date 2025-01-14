@@ -2,10 +2,14 @@
 package storage
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/rhombus-tech/vm/regions"
 )
+
+var _ regions.Storage = (*RegionStateStore)(nil)
 
 // RegionStateStore provides storage operations for region state
 type RegionStateStore struct {
@@ -34,6 +38,43 @@ func NewRegionStateStore(sm *StateManager) *RegionStateStore {
         stateManager: sm,
     }
 }
+
+func (s *RegionStateStore) GetRegionConfig(regionID string) (*regions.RegionConfig, error) {
+    // Create background context since it's not part of the interface
+    ctx := context.Background()
+    
+    key := makeRegionKey("config", regionID, "")
+    value, err := s.stateManager.GetValue(ctx, key)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get region config: %w", err)
+    }
+
+    var config regions.RegionConfig
+    if err := json.Unmarshal(value, &config); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal region config: %w", err)
+    }
+
+    return &config, nil
+}
+
+func (s *RegionStateStore) SetRegionConfig(regionID string, config *regions.RegionConfig) error {
+    // Create background context since it's not part of the interface
+    ctx := context.Background()
+    
+    data, err := json.Marshal(config)
+    if err != nil {
+        return fmt.Errorf("failed to marshal region config: %w", err)
+    }
+
+    key := makeRegionKey("config", regionID, "")
+    if err := s.stateManager.Insert(ctx, key, data); err != nil {
+        return fmt.Errorf("failed to store region config: %w", err)
+    }
+
+    return nil
+}
+
+
 
 // SaveRegion persists a region configuration
 func (s *RegionStateStore) SaveRegion(ctx context.Context, region map[string]interface{}) error {
@@ -99,14 +140,6 @@ func (s *RegionStateStore) SaveRegionSettings(ctx context.Context, regionID stri
     return s.stateManager.Insert(ctx, key, data)
 }
 
-type Iterator interface {
-    Next() bool
-    Key() []byte
-    Value() []byte
-    Error() error
-    Close()
-}
-
 // ListRegions returns all region IDs
 func (s *RegionStateStore) ListRegions(ctx context.Context) ([]string, error) {
     prefix := []byte("region/config/")
@@ -129,6 +162,11 @@ func (s *RegionStateStore) ListRegions(ctx context.Context) ([]string, error) {
     }
 
     return regions, nil
+}
+
+func (s *RegionStateStore) DeleteRegionConfig(ctx context.Context, regionID string) error {
+    key := makeRegionKey("config", regionID, "")
+    return s.stateManager.Remove(ctx, key)
 }
 
 

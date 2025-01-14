@@ -17,6 +17,7 @@ import (
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state"
 
+	"github.com/rhombus-tech/vm"
 	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/core"
 )
@@ -40,6 +41,7 @@ type EnclaveInfo struct {
 
 // StateManager wraps lower-level storage operations
 type StateManager struct {
+    db          database.Database
     backingStore state.Mutable
     coordinator  *coordination.Coordinator
     regionStores map[string]state.Mutable
@@ -108,6 +110,7 @@ func makeRegionKey(regionID, prefix, id string) []byte {
 
 // NewStateManager creates a new state manager
 func NewStateManager(
+    db database.Database,
     store state.Mutable,
     dbForCoord merkledb.MerkleDB,
 ) (*StateManager, error) {
@@ -126,10 +129,15 @@ func NewStateManager(
     }
 
     return &StateManager{
+        db:           db,
         backingStore: store,
         coordinator:  coord,
         regionStores: make(map[string]state.Mutable),
     }, nil
+}
+
+func (s *StateManager) Iterator(ctx context.Context, prefix []byte) vm.Iterator {
+    return NewRegionIterator(ctx, s.db, prefix)
 }
 
 // Balance operations
@@ -499,8 +507,6 @@ func (d *DatabaseWrapper) Remove(ctx context.Context, key []byte) error {
 }
 
 
-
-
 func (s *StateManager) DeleteRegion(ctx context.Context, id string) error {
     s.regionMu.Lock()
     defer s.regionMu.Unlock()
@@ -509,7 +515,6 @@ func (s *StateManager) DeleteRegion(ctx context.Context, id string) error {
     key := []byte(fmt.Sprintf("region/%s", id))
     return s.backingStore.Remove(ctx, key)
 }
-
 
 // Verify StateManager implements all required interfaces
 var (
