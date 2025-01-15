@@ -37,7 +37,7 @@ type StateManager interface {
      
      // Event operations
      SetEvent(ctx context.Context, mu state.Mutable, id string, event *core.Event, regionID string) error
-     
+
      // Region operations
      GetRegion(ctx context.Context, mu state.Mutable, id string) (map[string]interface{}, error)
      SetRegion(ctx context.Context, mu state.Mutable, id string, region map[string]interface{}) error
@@ -55,4 +55,7 @@ type StateManager interface {
 
     GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]byte, error)
     Iterator(ctx context.Context, prefix []byte) Iterator
+
+    GetRegionalStore(regionID string) (core.RegionalStore, error)
+    IsRegionalKey(key []byte) (bool, string)
 }

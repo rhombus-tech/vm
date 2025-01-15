@@ -18,6 +18,8 @@ var (
 	ErrIDRequired       = errors.New("region ID required")
 	ErrInvalidLimits    = errors.New("invalid resource limits")
 	ErrConfigNotFound   = errors.New("region configuration not found")
+	ErrInvalidLocation  = errors.New("invalid geographic location")
+    ErrInvalidDistance  = errors.New("invalid maximum distance")
 )
 
 // LoadBalancerConfig defines load balancing settings for a region
@@ -28,6 +30,8 @@ type LoadBalancerConfig struct {
 	MinActiveWorkers  int     // Minimum number of active workers
 	MaxPendingTasks   int     // Maximum number of pending tasks
 	HealthCheckWindow int64   // Health check window in seconds
+	GeoPreference     bool    // Whether to prefer geographically closer regions
+    MaxDistance       float64 // Maximum acceptable distance in km
 }
 
 // TEEPair represents a pair of TEE IDs (SGX + SEV)
@@ -43,6 +47,7 @@ type RegionConfig struct {
 	MaxObjects   int                // Maximum number of objects in region
 	MaxEvents    int                // Maximum number of events in region
 	LoadBalancer LoadBalancerConfig // Load balancer settings
+	Location     GeoLocation		// Region location
 }
 
 // RegionManager handles region configuration management
@@ -75,34 +80,50 @@ func NewRegionManager(store Storage) *RegionManager {
 
 // Validate checks if a region configuration is valid
 func (c *RegionConfig) Validate() error {
-	if c.ID == "" {
-		return ErrIDRequired
-	}
+    // Existing validations
+    if c.ID == "" {
+        return ErrIDRequired
+    }
 
-	if len(c.TEEPairs) == 0 {
-		return fmt.Errorf("%w: at least one TEE pair required", ErrInvalidConfig)
-	}
+    if len(c.TEEPairs) == 0 {
+        return fmt.Errorf("%w: at least one TEE pair required", ErrInvalidConfig)
+    }
 
-	// Check for duplicate TEE pairs
-	seen := make(map[string]bool)
-	for i, pair := range c.TEEPairs {
-		// Validate SGX ID
-		if len(pair.SGXID) == 0 {
-			return fmt.Errorf("%w: missing SGX ID in pair %d", ErrInvalidTEEPair, i)
-		}
+    // Check for duplicate TEE pairs
+    seen := make(map[string]bool)
+    for i, pair := range c.TEEPairs {
+        if len(pair.SGXID) == 0 {
+            return fmt.Errorf("%w: missing SGX ID in pair %d", ErrInvalidTEEPair, i)
+        }
 
-		// Validate SEV ID
-		if len(pair.SEVID) == 0 {
-			return fmt.Errorf("%w: missing SEV ID in pair %d", ErrInvalidTEEPair, i)
-		}
+        if len(pair.SEVID) == 0 {
+            return fmt.Errorf("%w: missing SEV ID in pair %d", ErrInvalidTEEPair, i)
+        }
 
-		// Check for duplicates using string representation
-		key := fmt.Sprintf("%x:%x", pair.SGXID, pair.SEVID)
-		if seen[key] {
-			return fmt.Errorf("%w: pair %d", ErrDuplicateTEEPair, i)
-		}
-		seen[key] = true
-	}
+        key := fmt.Sprintf("%x:%x", pair.SGXID, pair.SEVID)
+        if seen[key] {
+            return fmt.Errorf("%w: pair %d", ErrDuplicateTEEPair, i)
+        }
+        seen[key] = true
+    }
+
+    // Validate resource limits
+    if c.MaxObjects <= 0 || c.MaxEvents <= 0 {
+        return ErrInvalidLimits
+    }
+
+    // Validate load balancer config
+    if err := c.validateLoadBalancerConfig(); err != nil {
+        return err
+    }
+
+    // Add location validation
+    if err := c.validateLocation(); err != nil {
+        return err
+    }
+
+    return nil
+}
 
 	// Validate resource limits
 	if c.MaxObjects <= 0 || c.MaxEvents <= 0 {
@@ -117,35 +138,53 @@ func (c *RegionConfig) Validate() error {
 	return nil
 }
 
+func (c *RegionConfig) validateLocation() error {
+    if c.Location.Latitude < -90 || c.Location.Latitude > 90 {
+        return fmt.Errorf("%w: invalid latitude", ErrInvalidLocation)
+    }
+    if c.Location.Longitude < -180 || c.Location.Longitude > 180 {
+        return fmt.Errorf("%w: invalid longitude", ErrInvalidLocation)
+    }
+    if c.Location.DataCenter == "" {
+        return fmt.Errorf("%w: missing datacenter", ErrInvalidLocation)
+    }
+    if c.Location.Region == "" {
+        return fmt.Errorf("%w: missing region name", ErrInvalidLocation)
+    }
+    return nil
+}
+
+
 // validateLoadBalancerConfig validates load balancer settings
 func (c *RegionConfig) validateLoadBalancerConfig() error {
-	lb := c.LoadBalancer
+    lb := c.LoadBalancer
 
-	if lb.MaxLoadFactor <= 0 || lb.MaxLoadFactor > 1.0 {
-		return fmt.Errorf("%w: invalid load factor", ErrInvalidConfig)
-	}
+    // Existing validations
+    if lb.MaxLoadFactor <= 0 || lb.MaxLoadFactor > 1.0 {
+        return fmt.Errorf("%w: invalid load factor", ErrInvalidConfig)
+    }
+    if lb.MaxLatencyMs <= 0 {
+        return fmt.Errorf("%w: invalid max latency", ErrInvalidConfig)
+    }
+    if lb.MaxErrorRate < 0 || lb.MaxErrorRate > 1.0 {
+        return fmt.Errorf("%w: invalid error rate", ErrInvalidConfig)
+    }
+    if lb.MinActiveWorkers < 1 {
+        return fmt.Errorf("%w: invalid min workers", ErrInvalidConfig)
+    }
+    if lb.MaxPendingTasks < 1 {
+        return fmt.Errorf("%w: invalid max pending tasks", ErrInvalidConfig)
+    }
+    if lb.HealthCheckWindow <= 0 {
+        return fmt.Errorf("%w: invalid health check window", ErrInvalidConfig)
+    }
 
-	if lb.MaxLatencyMs <= 0 {
-		return fmt.Errorf("%w: invalid max latency", ErrInvalidConfig)
-	}
+    // Add new validations
+    if lb.GeoPreference && lb.MaxDistance <= 0 {
+        return fmt.Errorf("%w: invalid max distance", ErrInvalidDistance)
+    }
 
-	if lb.MaxErrorRate < 0 || lb.MaxErrorRate > 1.0 {
-		return fmt.Errorf("%w: invalid error rate", ErrInvalidConfig)
-	}
-
-	if lb.MinActiveWorkers < 1 {
-		return fmt.Errorf("%w: invalid min workers", ErrInvalidConfig)
-	}
-
-	if lb.MaxPendingTasks < 1 {
-		return fmt.Errorf("%w: invalid max pending tasks", ErrInvalidConfig)
-	}
-
-	if lb.HealthCheckWindow <= 0 {
-		return fmt.Errorf("%w: invalid health check window", ErrInvalidConfig)
-	}
-
-	return nil
+    return nil
 }
 
 // UpdateConfig validates and updates a region configuration

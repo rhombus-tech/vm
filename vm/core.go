@@ -168,12 +168,11 @@ func (vm *ShuttleVM) Initialize(
         }
     }
 
-    // Initialize validators with coordinator awareness
-    vm.initializeValidators()
-
-    // Initialize region manager with coordination support
     regionStore := storage.NewRegionStateStore(vm.stateManager)
     vm.regionManager = regions.NewRegionManager(regionStore)
+
+    // Initialize validators with coordinator awareness
+    vm.initializeValidators()
 
     // Register compute nodes as workers and set up regions
     for regionID := range vm.computeNodes {

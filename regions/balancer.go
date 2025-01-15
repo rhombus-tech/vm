@@ -1,105 +1,202 @@
-// regions/balancer.go
 package regions
 
 import (
-	"context"
-	"errors"
-	"sync"
-	"time"
+    "context"
+    "errors"
+    "sync"
+    "time"
+    
+    "github.com/rhombus-tech/vm/core"
 )
 
 var (
-	ErrNoHealthyRegions = errors.New("no healthy regions available")
-	ErrRegionOverloaded = errors.New("region is overloaded")
-	ErrRegionUnhealthy  = errors.New("region is unhealthy")
+    ErrNoHealthyRegions = errors.New("no healthy regions available")
+    ErrRegionOverloaded = errors.New("region is overloaded")
+    ErrRegionUnhealthy  = errors.New("region is unhealthy")
 )
 
-type RegionBalancer struct {
-	regions    map[string]*Region
-	metrics    map[string]*RegionMetrics
-	thresholds *BalancerConfig
-	mu         sync.RWMutex
-}
-
+// Extend Region to include location and TEE information while preserving existing fields
 type Region struct {
-	ID          string
-	WorkerIDs   []string
-	IsHealthy   bool
-	LastUpdated time.Time
+    ID          string
+    WorkerIDs   []string
+    IsHealthy   bool
+    LastUpdated time.Time
+    // Add new fields
+    Location    *GeoLocation
+    TEEPairs    [][2]core.TEEAddress
 }
 
+// Add GeoLocation type
+type GeoLocation struct {
+    Latitude    float64
+    Longitude   float64
+    DataCenter  string
+    Country     string
+    Region      string // e.g., "us-east-1"
+}
+
+// Extend RegionMetrics while preserving existing fields
 type RegionMetrics struct {
-	LoadFactor      float64   // 0.0-1.0
-	LatencyMs       float64   // Average latency in milliseconds
-	ErrorRate       float64   // Error rate in last window
-	ActiveWorkers   int       // Number of active workers
-	PendingTasks    int       // Number of pending tasks
-	LastHealthCheck time.Time // Last successful health check
+    LoadFactor      float64   // 0.0-1.0
+    LatencyMs       float64   // Average latency in milliseconds
+    ErrorRate       float64   // Error rate in last window
+    ActiveWorkers   int       // Number of active workers
+    PendingTasks    int       // Number of pending tasks
+    LastHealthCheck time.Time // Last successful health check
+    // Add new fields
+    NetworkLatency  map[string]float64  // Latency to other regions
+    TEEMetrics      map[string]*TEEMetrics
 }
 
+// Add TEEMetrics type
+type TEEMetrics struct {
+    EnclaveID    []byte
+    Type         string  // "SGX" or "SEV"
+    LoadFactor   float64
+    SuccessRate  float64
+    LastAttested time.Time
+}
+
+// Extend BalancerConfig while preserving existing fields
 type BalancerConfig struct {
-	MaxLoadFactor     float64
-	MaxLatencyMs      float64
-	MaxErrorRate      float64
-	MinActiveWorkers  int
-	MaxPendingTasks   int
-	HealthCheckWindow time.Duration
+    MaxLoadFactor     float64
+    MaxLatencyMs      float64
+    MaxErrorRate      float64
+    MinActiveWorkers  int
+    MaxPendingTasks   int
+    HealthCheckWindow time.Duration
+    // Add new fields
+    GeoPreference     bool    // Whether to prefer geographically closer regions
+    MaxDistance       float64 // Maximum acceptable distance in km
 }
 
+// Keep RegionBalancer structure the same
+type RegionBalancer struct {
+    regions    map[string]*Region
+    metrics    map[string]*RegionMetrics
+    thresholds *BalancerConfig
+    mu         sync.RWMutex
+}
+
+// Update NewRegionBalancer with new default values while preserving existing ones
 func NewRegionBalancer(config *BalancerConfig) *RegionBalancer {
-	if config == nil {
-		config = &BalancerConfig{
-			MaxLoadFactor:     0.8,
-			MaxLatencyMs:      1000,
-			MaxErrorRate:      0.1,
-			MinActiveWorkers:  2,
-			MaxPendingTasks:   1000,
-			HealthCheckWindow: 5 * time.Minute,
-		}
-	}
+    if config == nil {
+        config = &BalancerConfig{
+            MaxLoadFactor:     0.8,
+            MaxLatencyMs:      1000,
+            MaxErrorRate:      0.1,
+            MinActiveWorkers:  2,
+            MaxPendingTasks:   1000,
+            HealthCheckWindow: 5 * time.Minute,
+            // Add new defaults
+            GeoPreference:     true,
+            MaxDistance:       5000, // 5000km
+        }
+    }
 
-	return &RegionBalancer{
-		regions:    make(map[string]*Region),
-		metrics:    make(map[string]*RegionMetrics),
-		thresholds: config,
-	}
+    return &RegionBalancer{
+        regions:    make(map[string]*Region),
+        metrics:    make(map[string]*RegionMetrics),
+        thresholds: config,
+    }
 }
 
-func (b *RegionBalancer) SelectRegion(ctx context.Context) (string, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
+// Add new method for location-aware selection while keeping existing SelectRegion
+func (b *RegionBalancer) SelectRegionWithLocation(ctx context.Context, preferredLocation *GeoLocation) (string, error) {
+    b.mu.RLock()
+    defer b.mu.RUnlock()
 
-	selected := ""
-	lowestLoad := 1.0
+    if preferredLocation == nil || !b.thresholds.GeoPreference {
+        // Fall back to existing selection logic if no location preference
+        return b.selectRegionByLoad()
+    }
 
-	for id, region := range b.regions {
-		if !b.isRegionHealthy(id, region) {
-			continue
-		}
+    selected := ""
+    bestScore := -1.0
 
-		metrics := b.metrics[id]
-		if metrics == nil {
-			continue
-		}
+    for id, region := range b.regions {
+        if !b.isRegionHealthy(id, region) {
+            continue
+        }
 
-		// Check if region is within thresholds
-		if !b.isRegionWithinThresholds(metrics) {
-			continue
-		}
+        metrics := b.metrics[id]
+        if metrics == nil || !b.isRegionWithinThresholds(metrics) {
+            continue
+        }
 
-		// Select region with lowest load
-		if metrics.LoadFactor < lowestLoad {
-			selected = id
-			lowestLoad = metrics.LoadFactor
-		}
-	}
+        // Calculate score based on both load and distance
+        distance := calculateDistance(preferredLocation, region.Location)
+        if distance > b.thresholds.MaxDistance {
+            continue
+        }
 
-	if selected == "" {
-		return "", ErrNoHealthyRegions
-	}
+        score := calculateRegionScore(metrics, distance, b.thresholds)
+        if score > bestScore {
+            selected = id
+            bestScore = score
+        }
+    }
 
-	return selected, nil
+    if selected == "" {
+        return "", ErrNoHealthyRegions
+    }
+
+    return selected, nil
 }
+
+// Keep existing SelectRegion and rename it to indicate it's load-based
+func (b *RegionBalancer) selectRegionByLoad() (string, error) {
+    selected := ""
+    lowestLoad := 1.0
+
+    for id, region := range b.regions {
+        if !b.isRegionHealthy(id, region) {
+            continue
+        }
+
+        metrics := b.metrics[id]
+        if metrics == nil || !b.isRegionWithinThresholds(metrics) {
+            continue
+        }
+
+        if metrics.LoadFactor < lowestLoad {
+            selected = id
+            lowestLoad = metrics.LoadFactor
+        }
+    }
+
+    if selected == "" {
+        return "", ErrNoHealthyRegions
+    }
+
+    return selected, nil
+}
+
+// Add helper function for distance calculation
+func calculateDistance(l1, l2 *GeoLocation) float64 {
+    if l1 == nil || l2 == nil {
+        return 0
+    }
+    // Implement Haversine formula for actual distance calculation
+    // This is a simplified placeholder
+    return 0
+}
+
+// Add helper function for score calculation
+func calculateRegionScore(metrics *RegionMetrics, distance float64, thresholds *BalancerConfig) float64 {
+    const (
+        loadWeight     = 0.4
+        latencyWeight  = 0.3
+        distanceWeight = 0.3
+    )
+
+    loadScore := 1 - metrics.LoadFactor
+    latencyScore := 1 - (metrics.LatencyMs / thresholds.MaxLatencyMs)
+    distanceScore := 1 - (distance / thresholds.MaxDistance)
+
+    return loadScore*loadWeight + latencyScore*latencyWeight + distanceScore*distanceWeight
+}
+
 
 func (b *RegionBalancer) UpdateMetrics(regionID string, metrics *RegionMetrics) {
 	b.mu.Lock()
