@@ -183,11 +183,11 @@ func isValidRegionID(id string) bool {
 
 // Add this type definition at the top with other types
 type MerkleStore struct {
-    db           merkledb.MerkleDB
-    regionID     string
-    lastHash     []byte
-    updateCount  uint64
-    mu           sync.RWMutex
+    db          merkledb.MerkleDB
+    regionID    string
+    lastHash    []byte
+    updateCount uint64
+    mu          sync.RWMutex
 }
 
 // Add constructor if not already present
@@ -199,18 +199,17 @@ func NewMerkleStore(db merkledb.MerkleDB, regionID string) *MerkleStore {
     }
 }
 
+// MerkleStore methods
 func (ms *MerkleStore) Insert(ctx context.Context, key []byte, value []byte) error {
     ms.mu.Lock()
     defer ms.mu.Unlock()
 
     regionalKey := makeRegionalKey(ms.regionID, key)
     
-    // Use Put for insertion
     if err := ms.db.Put(regionalKey, value); err != nil {
         return fmt.Errorf("failed to insert: %w", err)
     }
 
-    // Update merkle root after modification
     if err := ms.updateMerkleRoot(ctx); err != nil {
         return fmt.Errorf("failed to update merkle root: %w", err)
     }
@@ -224,7 +223,6 @@ func (ms *MerkleStore) Get(ctx context.Context, key []byte) ([]byte, error) {
     defer ms.mu.RUnlock()
 
     regionalKey := makeRegionalKey(ms.regionID, key)
-    // Get doesn't take context
     return ms.db.Get(regionalKey)
 }
 
@@ -233,8 +231,6 @@ func (ms *MerkleStore) Delete(ctx context.Context, key []byte) error {
     defer ms.mu.Unlock()
 
     regionalKey := makeRegionalKey(ms.regionID, key)
-    
-    // Delete doesn't take context
     if err := ms.db.Delete(regionalKey); err != nil {
         return err
     }
@@ -242,14 +238,38 @@ func (ms *MerkleStore) Delete(ctx context.Context, key []byte) error {
     return ms.updateMerkleRoot(ctx)
 }
 
-// GetProof generates a merkle proof
 func (ms *MerkleStore) GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error) {
     ms.mu.RLock()
     defer ms.mu.RUnlock()
 
     regionalKey := makeRegionalKey(ms.regionID, key)
-    // GetProof takes context
     return ms.db.GetProof(ctx, regionalKey)
+}
+
+func (ms *MerkleStore) GetValue(ctx context.Context, key []byte) ([]byte, error) {
+    ms.mu.RLock()
+    defer ms.mu.RUnlock()
+
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    return ms.db.Get(regionalKey)
+}
+
+func (ms *MerkleStore) Remove(ctx context.Context, key []byte) error {
+    ms.mu.Lock()
+    defer ms.mu.Unlock()
+
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    return ms.db.Delete(regionalKey)
+}
+
+func (ms *MerkleStore) updateMerkleRoot(ctx context.Context) error {
+    root, err := ms.db.GetMerkleRoot(ctx)
+    if err != nil {
+        return err
+    }
+    
+    ms.lastHash = root[:]
+    return nil
 }
 
 // Update VerifyStateUpdate to use simpler verification
@@ -268,16 +288,6 @@ func (ms *MerkleStore) VerifyStateUpdate(ctx context.Context, proof *merkledb.Pr
     return nil
 }
 
-func (ms *MerkleStore) updateMerkleRoot(ctx context.Context) error {
-    root, err := ms.db.GetMerkleRoot(ctx)
-    if err != nil {
-        return err
-    }
-    
-    ms.lastHash = root[:]
-    return nil
-}
-
 // Helper functions remain unchanged
 func makeRegionalKey(regionID string, key []byte) []byte {
     return []byte(fmt.Sprintf("r/%s/%s", regionID, key))
@@ -287,14 +297,13 @@ type RegionalStateManager struct {
     stores       map[string]*MerkleStore
     mu           sync.RWMutex
     backingStore state.Mutable
-    db           merkledb.MerkleDB
+    merkleDB  merkledb.MerkleDB
 }
 
-func NewRegionalStateManager(db merkledb.MerkleDB, backing state.Mutable) *RegionalStateManager {
+func NewRegionalStateManager(merkleDB merkledb.MerkleDB, _ state.Mutable) *RegionalStateManager {
     return &RegionalStateManager{
-        stores:       make(map[string]*MerkleStore),
-        backingStore: backing,
-        db:          db,
+        stores:    make(map[string]*MerkleStore),
+        merkleDB:  merkleDB,
     }
 }
 
@@ -310,12 +319,29 @@ func (rsm *RegionalStateManager) GetRegionalStore(regionID string) (*MerkleStore
 
     rsm.mu.Lock()
     defer rsm.mu.Unlock()
-    
+
+    // Double-check after acquiring write lock
     if store, exists = rsm.stores[regionID]; exists {
         return store, nil
     }
 
-    store = NewMerkleStore(rsm.db, regionID)
+    // Create new MerkleDB instance for region
+    mdb, err := merkledb.New(
+        context.Background(),
+        rsm.merkleDB, // Use the merkleDB field
+        merkledb.Config{
+            HistoryLength: 256,
+        },
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to create merkle store for region %s: %w", regionID, err)
+    }
+
+    store = &MerkleStore{
+        db:       mdb,
+        regionID: regionID,
+    }
     rsm.stores[regionID] = store
+
     return store, nil
 }

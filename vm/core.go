@@ -4,7 +4,6 @@ package vm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -91,7 +90,7 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
 func (vm *ShuttleVM) Initialize(
     ctx context.Context,
     snowCtx *snow.Context,
-    db database.Database,
+    db database.Database,  // You should have this from the VM initialization
     genesisBytes []byte,
     upgradeBytes []byte,
     configBytes []byte,
@@ -101,21 +100,18 @@ func (vm *ShuttleVM) Initialize(
 ) error {
     // Store core dependencies
     vm.ctx = snowCtx
-    vm.db = db
+    vm.db = db  // Store the database reference
     vm.appSender = appSender
     vm.chainID = snowCtx.ChainID
 
-    // Parse config
-    if err := json.Unmarshal(configBytes, &vm.config); err != nil {
-        return fmt.Errorf("failed to parse config: %w", err)
-    }
+    // Create database wrapper that implements state.Mutable
+    dbWrapper := storage.NewDatabaseWrapper(db)
 
     // Initialize MerkleDB
     merkleDB, err := merkledb.New(
         ctx,
         db,
         merkledb.Config{
-            // Remove TracingEnabled and ValueCacheSize as they're not in the Config
             HistoryLength: 256,
         },
     )
@@ -123,11 +119,12 @@ func (vm *ShuttleVM) Initialize(
         return fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    // Create database wrapper that implements state.Mutable
-    dbWrapper := storage.NewDatabaseWrapper(db)
-
-    // Set up state manager with merkleDB
-    stateManager, err := storage.NewStateManager(dbWrapper, merkleDB)
+    // Create state manager with all three required arguments
+    stateManager, err := storage.NewStateManager(
+        vm.db,       // database.Database
+        dbWrapper,   // state.Mutable
+        merkleDB,    // merkledb.MerkleDB
+    )
     if err != nil {
         return fmt.Errorf("failed to create state manager: %w", err)
     }

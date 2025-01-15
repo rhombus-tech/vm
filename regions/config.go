@@ -3,8 +3,11 @@ package regions
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+
+	"github.com/ava-labs/avalanchego/x/merkledb"
 )
 
 var (
@@ -52,7 +55,9 @@ type Storage interface {
 	GetRegionConfig(regionID string) (*RegionConfig, error)
 
 	// DeleteRegionConfig removes a region configuration
-	DeleteRegionConfig(regionID string) error
+	DeleteRegionConfig(ctx context.Context, regionID string) error
+
+	GetRegionProof(ctx context.Context, regionID string) (*merkledb.Proof, error)
 }
 
 type RegionManager struct {
@@ -189,17 +194,14 @@ func (m *RegionManager) GetConfig(regionID string) (*RegionConfig, error) {
 }
 
 // DeleteConfig removes a region configuration
-func (m *RegionManager) DeleteConfig(regionID string) error {
-	// Remove from storage
-	if err := m.store.DeleteRegionConfig(regionID); err != nil {
-		return fmt.Errorf("failed to delete config: %w", err)
-	}
-
-	// Remove from cache
-	delete(m.configs, regionID)
-
-	return nil
+func (m *RegionManager) DeleteRegion(ctx context.Context, regionID string) error {
+    err := m.store.DeleteRegionConfig(ctx, regionID)
+    if err != nil {
+        return fmt.Errorf("failed to delete region config: %w", err)
+    }
+    return nil
 }
+
 
 // FindTEEPair looks up a TEE pair by IDs
 func (m *RegionManager) FindTEEPair(regionID string, sgxID, sevID []byte) (*TEEPair, error) {

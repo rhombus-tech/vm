@@ -41,11 +41,12 @@ type EnclaveInfo struct {
 
 // StateManager wraps lower-level storage operations
 type StateManager struct {
-    db          database.Database
-    backingStore state.Mutable
-    coordinator  *coordination.Coordinator
-    regionStores map[string]state.Mutable
-    regionMu     sync.RWMutex
+    db              database.Database
+    backingStore    state.Mutable
+    coordinator     *coordination.Coordinator
+    regionStores    map[string]*MerkleStore  
+    regionMu        sync.RWMutex
+    regionalManager *RegionalStateManager
 }
 
 func (s *StateManager) GetValidEnclave(
@@ -128,19 +129,34 @@ func NewStateManager(
         return nil, fmt.Errorf("failed to start coordinator: %w", err)
     }
 
+    // Create regional manager
+    regionalManager := NewRegionalStateManager(dbForCoord, store)
+
     return &StateManager{
-        db:           db,
-        backingStore: store,
-        coordinator:  coord,
-        regionStores: make(map[string]state.Mutable),
+        db:              db,
+        backingStore:    store,
+        coordinator:     coord,
+        regionStores:    make(map[string]state.Mutable),
+        regionalManager: regionalManager,
     }, nil
 }
 
+
 func (s *StateManager) Iterator(ctx context.Context, prefix []byte) vm.Iterator {
+    if bytes.HasPrefix(prefix, []byte("r/")) {
+        parts := bytes.SplitN(prefix, []byte("/"), 3)
+        if len(parts) >= 2 {
+            regionID := string(parts[1])
+            store, err := s.regionalManager.GetRegionalStore(regionID)
+            if err == nil {
+                return NewRegionIterator(ctx, store.db, prefix)
+            }
+        }
+    }
     return NewRegionIterator(ctx, s.db, prefix)
 }
 
-// Balance operations
+// Update balance operations to be region-aware if needed
 func (s *StateManager) AddBalance(
     ctx context.Context, 
     addr codec.Address, 
@@ -148,6 +164,7 @@ func (s *StateManager) AddBalance(
     amount uint64,
     createAccount bool,
 ) error {
+    // Balance operations remain global, not region-specific
     oldBal, err := GetBalance(ctx, st, addr)
     if err != nil {
         return err
@@ -223,7 +240,11 @@ func (s *StateManager) GetObject(
         return nil, ErrInvalidRegionID
     }
 
-    store := s.getRegionalStore(regionID, mu)
+    store, err := s.GetRegionalStore(regionID, mu)  // Updated to handle error
+    if err != nil {
+        return nil, fmt.Errorf("failed to get regional store: %w", err)
+    }
+
     objKey := makeRegionKey(regionID, "object", id)
     
     value, err := store.GetValue(ctx, objKey)
@@ -257,7 +278,11 @@ func (s *StateManager) SetObject(
         return ErrInvalidRegionID
     }
 
-    store := s.getRegionalStore(obj.RegionID, mu)
+    store, err := s.GetRegionalStore(obj.RegionID, mu)
+    if err != nil {
+        return fmt.Errorf("failed to get regional store: %w", err)
+    }
+
     objKey := makeRegionKey(obj.RegionID, "object", id)
 
     objMap := map[string][]byte{
@@ -284,10 +309,12 @@ func (s *StateManager) ObjectExists(
         return false, ErrInvalidRegionID
     }
 
-    // Use the existing regional store getter
-    store := s.getRegionalStore(regionID, mu)
+    store, err := s.GetRegionalStore(regionID, mu)
+    if err != nil {
+        return false, fmt.Errorf("failed to get regional store: %w", err)  // Return false, not nil
+    }
+
     objKey := makeRegionKey(regionID, "object", id)
-    
     value, err := store.GetValue(ctx, objKey)
     if err != nil {
         if errors.Is(err, database.ErrNotFound) {
@@ -305,31 +332,23 @@ func (s *StateManager) SetEvent(
     id string,
     event *core.Event,
     regionID string,
-) error {
+) error {  // Just return error, not (bool, error)
     if regionID == "" {
         return ErrInvalidRegionID
     }
 
-    store := s.getRegionalStore(regionID, mu)
-    eventKey := makeRegionKey(regionID, "event", id)
-
-    // Create event data
-    eventData := map[string]interface{}{
-        "function_call": event.FunctionCall,
-        "parameters":    event.Parameters,
-        "attestations": event.Attestations,
-        "timestamp":    event.Timestamp,
-        "status":       event.Status,
-    }
-
-    // Marshal event data
-    value, err := marshalState(eventData)
+    store, err := s.GetRegionalStore(regionID, mu)
     if err != nil {
-        return fmt.Errorf("failed to marshal event: %w", err)
+        return fmt.Errorf("failed to get regional store: %w", err)  // Just return the error
     }
 
-    // Store using the regional event key
-    return store.Insert(ctx, eventKey, value)
+    eventKey := makeRegionKey(regionID, "event", id)
+    value, err := marshalState(event)
+    if err != nil {
+        return fmt.Errorf("failed to marshal event: %w", err)  // Just return the error
+    }
+
+    return store.Insert(ctx, eventKey, value)  // Just return the error
 }
 
 // Region operations
@@ -342,7 +361,11 @@ func (s *StateManager) GetRegion(
         return nil, ErrInvalidRegionID
     }
 
-    store := s.getRegionalStore(regionID, mu)
+    store, err := s.GetRegionalStore(regionID, mu)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get regional store: %w", err)
+    }
+
     return GetRegion(ctx, store, regionID)
 }
 
@@ -356,7 +379,11 @@ func (s *StateManager) SetRegion(
         return ErrInvalidRegionID
     }
 
-    store := s.getRegionalStore(regionID, mu)
+    store, err := s.GetRegionalStore(regionID, mu)
+    if err != nil {
+        return fmt.Errorf("failed to get regional store: %w", err)
+    }
+
     return SetRegion(ctx, store, regionID, region)
 }
 
@@ -369,7 +396,11 @@ func (s *StateManager) RegionExists(
         return false, ErrInvalidRegionID
     }
 
-    store := s.getRegionalStore(regionID, mu)
+    store, err := s.GetRegionalStore(regionID, mu)
+    if err != nil {
+        return false, fmt.Errorf("failed to get regional store: %w", err)  // Return false instead of nil
+    }
+
     region, err := GetRegion(ctx, store, regionID)
     if err != nil {
         return false, err
@@ -401,22 +432,22 @@ func (s *StateManager) FeeKey() []byte {
 
 // Region-aware GetValue implementation
 func (s *StateManager) GetValue(ctx context.Context, key []byte) ([]byte, error) {
-    if isRegionalKey(key) {
-        regionID := extractRegionID(key)
-        store, err := s.getRegionStore(regionID)
+    isRegional, regionID := s.isRegionalKey(key)
+    if isRegional {
+        store, err := s.regionalManager.GetRegionalStore(regionID)
         if err != nil {
             return nil, err
         }
-        return store.GetValue(ctx, key)
+        return store.Get(ctx, key)
     }
     return s.backingStore.GetValue(ctx, key)
 }
 
-// Region-aware Insert implementation
+// Update Insert to use regionalManager
 func (s *StateManager) Insert(ctx context.Context, key []byte, value []byte) error {
-    if isRegionalKey(key) {
-        regionID := extractRegionID(key)
-        store, err := s.getRegionStore(regionID)
+    isRegional, regionID := s.isRegionalKey(key)
+    if isRegional {
+        store, err := s.regionalManager.GetRegionalStore(regionID)
         if err != nil {
             return err
         }
@@ -425,14 +456,15 @@ func (s *StateManager) Insert(ctx context.Context, key []byte, value []byte) err
     return s.backingStore.Insert(ctx, key, value)
 }
 
+// Update Remove to use regionalManager
 func (s *StateManager) Remove(ctx context.Context, key []byte) error {
-    if isRegionalKey(key) {
-        regionID := extractRegionID(key)
-        store, err := s.getRegionStore(regionID)
+    isRegional, regionID := s.isRegionalKey(key)
+    if isRegional {
+        store, err := s.regionalManager.GetRegionalStore(regionID)
         if err != nil {
             return err
         }
-        return store.Remove(ctx, key)
+        return store.Delete(ctx, key)
     }
     return s.backingStore.Remove(ctx, key)
 }
@@ -449,17 +481,23 @@ func (s *StateManager) getRegionStore(regionID string) (state.Mutable, error) {
     return store, nil
 }
 
-func (s *StateManager) getRegionalStore(regionID string, defaultStore state.Mutable) state.Mutable {
+func (s *StateManager) GetRegionalStore(regionID string, mu state.Mutable) (*MerkleStore, error) {
     s.regionMu.RLock()
-    store, exists := s.regionStores[regionID]
+    store, exists := s.regionStores[regionID]  // Changed from s.stores to s.regionStores
     s.regionMu.RUnlock()
     
     if !exists {
-        return defaultStore
+        // Create new MerkleStore if it doesn't exist
+        store = &MerkleStore{
+            db:       s.merkleDB,
+            regionID: regionID,
+        }
+        s.regionMu.Lock()
+        s.regionStores[regionID] = store  // Changed from s.stores to s.regionStores
+        s.regionMu.Unlock()
     }
-    return store
+    return store, nil
 }
-
 func (s *StateManager) GetCoordinator() *coordination.Coordinator {
     return s.coordinator
 }
@@ -474,8 +512,14 @@ func (s *StateManager) Close() error {
 }
 
 // Helper functions
-func isRegionalKey(key []byte) bool {
-    return len(key) > 2 && key[0] == 'r' && key[1] == '/'
+func (s *StateManager) isRegionalKey(key []byte) (bool, string) {
+    if bytes.HasPrefix(key, []byte("r/")) {
+        parts := bytes.SplitN(key, []byte("/"), 3)
+        if len(parts) >= 2 {
+            return true, string(parts[1])
+        }
+    }
+    return false, ""
 }
 
 func extractRegionID(key []byte) string {
@@ -521,3 +565,5 @@ var (
     _ chain.StateManager = (*StateManager)(nil)
     _ state.Mutable = (*StateManager)(nil)
 )
+
+var _ state.Mutable = (*MerkleStore)(nil)

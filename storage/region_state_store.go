@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/ava-labs/avalanchego/x/merkledb"
 	"github.com/rhombus-tech/vm/regions"
 )
 
@@ -181,4 +182,20 @@ func incrementBytes(b []byte) []byte {
         }
     }
     return result
+}
+
+func (s *RegionStateStore) GetRegionProof(ctx context.Context, regionID string) (*merkledb.Proof, error) {
+    // Now we can get both the store and error
+    store, err := s.stateManager.GetRegionalStore(regionID, s.stateManager.backingStore)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get regional store: %w", err)
+    }
+
+    key := makeRegionKey("config", regionID, "")
+    proof, err := store.db.GetProof(ctx, key)  // Use the MerkleDB directly
+    if err != nil {
+        return nil, fmt.Errorf("failed to get proof: %w", err)
+    }
+
+    return proof, nil
 }
