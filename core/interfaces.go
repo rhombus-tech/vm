@@ -31,6 +31,10 @@ type StateManager interface {
     GetCoordinator() Coordinator
 
     GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]byte, error)
+
+    GetRegionalStore(regionID string) (RegionalStore, error)
+    IsRegionalKey(key []byte) (bool, string)
+     
 }
 
 // Coordinator interface
