@@ -15,18 +15,15 @@ var (
     ErrRegionUnhealthy  = errors.New("region is unhealthy")
 )
 
-// Extend Region to include location and TEE information while preserving existing fields
 type Region struct {
     ID          string
     WorkerIDs   []string
     IsHealthy   bool
     LastUpdated time.Time
-    // Add new fields
     Location    *GeoLocation
     TEEPairs    [][2]core.TEEAddress
 }
 
-// Add GeoLocation type
 type GeoLocation struct {
     Latitude    float64
     Longitude   float64
@@ -35,7 +32,6 @@ type GeoLocation struct {
     Region      string // e.g., "us-east-1"
 }
 
-// Extend RegionMetrics while preserving existing fields
 type RegionMetrics struct {
     LoadFactor      float64   // 0.0-1.0
     LatencyMs       float64   // Average latency in milliseconds
@@ -43,12 +39,10 @@ type RegionMetrics struct {
     ActiveWorkers   int       // Number of active workers
     PendingTasks    int       // Number of pending tasks
     LastHealthCheck time.Time // Last successful health check
-    // Add new fields
     NetworkLatency  map[string]float64  // Latency to other regions
     TEEMetrics      map[string]*TEEMetrics
 }
 
-// Add TEEMetrics type
 type TEEMetrics struct {
     EnclaveID    []byte
     Type         string  // "SGX" or "SEV"
@@ -57,7 +51,6 @@ type TEEMetrics struct {
     LastAttested time.Time
 }
 
-// Extend BalancerConfig while preserving existing fields
 type BalancerConfig struct {
     MaxLoadFactor     float64
     MaxLatencyMs      float64
@@ -70,7 +63,6 @@ type BalancerConfig struct {
     MaxDistance       float64 // Maximum acceptable distance in km
 }
 
-// Keep RegionBalancer structure the same
 type RegionBalancer struct {
     regions    map[string]*Region
     metrics    map[string]*RegionMetrics
@@ -78,7 +70,6 @@ type RegionBalancer struct {
     mu         sync.RWMutex
 }
 
-// Update NewRegionBalancer with new default values while preserving existing ones
 func NewRegionBalancer(config *BalancerConfig) *RegionBalancer {
     if config == nil {
         config = &BalancerConfig{
@@ -101,7 +92,7 @@ func NewRegionBalancer(config *BalancerConfig) *RegionBalancer {
     }
 }
 
-// Add new method for location-aware selection while keeping existing SelectRegion
+
 func (b *RegionBalancer) SelectRegionWithLocation(ctx context.Context, preferredLocation *GeoLocation) (string, error) {
     b.mu.RLock()
     defer b.mu.RUnlock()
@@ -144,7 +135,6 @@ func (b *RegionBalancer) SelectRegionWithLocation(ctx context.Context, preferred
     return selected, nil
 }
 
-// Keep existing SelectRegion and rename it to indicate it's load-based
 func (b *RegionBalancer) selectRegionByLoad() (string, error) {
     selected := ""
     lowestLoad := 1.0
@@ -172,7 +162,6 @@ func (b *RegionBalancer) selectRegionByLoad() (string, error) {
     return selected, nil
 }
 
-// Add helper function for distance calculation
 func calculateDistance(l1, l2 *GeoLocation) float64 {
     if l1 == nil || l2 == nil {
         return 0
@@ -182,7 +171,6 @@ func calculateDistance(l1, l2 *GeoLocation) float64 {
     return 0
 }
 
-// Add helper function for score calculation
 func calculateRegionScore(metrics *RegionMetrics, distance float64, thresholds *BalancerConfig) float64 {
     const (
         loadWeight     = 0.4

@@ -118,17 +118,16 @@ func (c *RegionConfig) Validate() error {
     }
 
     // Add location validation
-    if err := c.validateLocation(); err != nil {
+	if err := c.validateLocation(); err != nil {
         return err
     }
 
     return nil
-}
 
 	// Validate resource limits
 	if c.MaxObjects <= 0 || c.MaxEvents <= 0 {
-		return ErrInvalidLimits
-	}
+        return ErrInvalidLimits
+    }
 
 	// Validate load balancer config
 	if err := c.validateLoadBalancerConfig(); err != nil {
