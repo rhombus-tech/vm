@@ -47,6 +47,7 @@ type StateManager struct {
     regionStores    map[string]*MerkleStore  
     regionMu        sync.RWMutex
     regionalManager *RegionalStateManager
+    merkleDB        merkledb.MerkleDB
 }
 
 func (s *StateManager) GetValidEnclave(
@@ -136,8 +137,9 @@ func NewStateManager(
         db:              db,
         backingStore:    store,
         coordinator:     coord,
-        regionStores:    make(map[string]state.Mutable),
+        regionStores:    make(map[string]*MerkleStore),
         regionalManager: regionalManager,
+        merkleDB:        dbForCoord, 
     }, nil
 }
 
@@ -483,21 +485,32 @@ func (s *StateManager) getRegionStore(regionID string) (state.Mutable, error) {
 
 func (s *StateManager) GetRegionalStore(regionID string, mu state.Mutable) (*MerkleStore, error) {
     s.regionMu.RLock()
-    store, exists := s.regionStores[regionID]  // Changed from s.stores to s.regionStores
+    store, exists := s.regionStores[regionID]
     s.regionMu.RUnlock()
     
     if !exists {
-        // Create new MerkleStore if it doesn't exist
-        store = &MerkleStore{
-            db:       s.merkleDB,
-            regionID: regionID,
+        // Get TEE pair using exported method
+        teePair, err := s.coordinator.GetTEEPair(regionID)
+        if err != nil {
+            return nil, fmt.Errorf("failed to get TEE pair: %w", err)
         }
+
+        // Create new MerkleStore
+        store = NewMerkleStore(
+            s.merkleDB,
+            regionID,
+            s.coordinator,
+            teePair,
+        )
+
         s.regionMu.Lock()
-        s.regionStores[regionID] = store  // Changed from s.stores to s.regionStores
+        s.regionStores[regionID] = store
         s.regionMu.Unlock()
     }
     return store, nil
 }
+
+
 func (s *StateManager) GetCoordinator() *coordination.Coordinator {
     return s.coordinator
 }

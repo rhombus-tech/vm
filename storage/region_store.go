@@ -13,6 +13,7 @@ import (
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/x/merkledb"
 	"github.com/ava-labs/hypersdk/state"
+	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/regions"
 )
 
@@ -188,13 +189,17 @@ type MerkleStore struct {
     lastHash    []byte
     updateCount uint64
     mu          sync.RWMutex
+    coordinator *coordination.Coordinator
+    workers     [2]coordination.WorkerID 
 }
 
 // Add constructor if not already present
-func NewMerkleStore(db merkledb.MerkleDB, regionID string) *MerkleStore {
+func NewMerkleStore(db merkledb.MerkleDB, regionID string, coord *coordination.Coordinator, workers [2]coordination.WorkerID) *MerkleStore {
     return &MerkleStore{
         db:          db,
         regionID:    regionID,
+        coordinator: coord,
+        workers:     workers,
         updateCount: 0,
     }
 }
@@ -204,19 +209,41 @@ func (ms *MerkleStore) Insert(ctx context.Context, key []byte, value []byte) err
     ms.mu.Lock()
     defer ms.mu.Unlock()
 
-    regionalKey := makeRegionalKey(ms.regionID, key)
-    
-    if err := ms.db.Put(regionalKey, value); err != nil {
-        return fmt.Errorf("failed to insert: %w", err)
+    // Get channel between TEE pair using exported method
+    channel, err := ms.coordinator.GetSecureChannel(ctx, ms.workers[0], ms.workers[1])
+    if err != nil {
+        return fmt.Errorf("failed to get secure channel: %w", err)
     }
 
-    if err := ms.updateMerkleRoot(ctx); err != nil {
-        return fmt.Errorf("failed to update merkle root: %w", err)
+    // Create and marshal the message
+    msg := &coordination.Message{
+        FromWorker: ms.workers[0],
+        ToWorker:   ms.workers[1],
+        Type:       coordination.MessageTypeData,
+        Data:       value,
+        Timestamp:  time.Now(),
+    }
+    
+    // Marshal message to bytes
+    msgBytes, err := json.Marshal(msg)
+    if err != nil {
+        return fmt.Errorf("failed to marshal coordination message: %w", err)
+    }
+
+    // Send marshaled message bytes
+    if err := channel.Send(msgBytes); err != nil {
+        return fmt.Errorf("failed to send coordination message: %w", err)
+    }
+
+    regionalKey := makeRegionalKey(ms.regionID, key)
+    if err := ms.db.Put(regionalKey, value); err != nil {
+        return fmt.Errorf("failed to store value: %w", err)
     }
 
     ms.updateCount++
-    return nil
+    return ms.updateMerkleRoot(ctx)
 }
+
 
 func (ms *MerkleStore) Get(ctx context.Context, key []byte) ([]byte, error) {
     ms.mu.RLock()

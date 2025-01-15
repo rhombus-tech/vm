@@ -171,7 +171,9 @@ func (s *RegionStateStore) DeleteRegionConfig(ctx context.Context, regionID stri
 }
 
 
-// Helper function to increment byte slice for iteration
+// incrementBytes is used for range scanning operations to get the next possible key.
+// Currently unused but will be implemented when range queries are added.
+// TODO: Implement range query support
 func incrementBytes(b []byte) []byte {
     result := make([]byte, len(b))
     copy(result, b)

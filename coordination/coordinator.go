@@ -326,6 +326,35 @@ func (c *Coordinator) GetWorkerCount() int {
     return len(c.workers)
 }
 
+func (c *Coordinator) GetTEEPair(regionID string) ([2]WorkerID, error) {
+    c.regionLock.RLock()
+    defer c.regionLock.RUnlock()
+    
+    teePair, exists := c.teePairs[regionID]
+    if !exists {
+        return [2]WorkerID{}, ErrRegionNotFound
+    }
+    
+    return teePair, nil
+}
+
+func (c *Coordinator) GetSecureChannel(ctx context.Context, worker1, worker2 WorkerID) (*SecureChannel, error) {
+    // First try to load existing channel
+    channel, err := c.storage.LoadChannel(ctx, worker1, worker2)
+    if err != nil || channel == nil {
+        // Create new channel if none exists
+        channel = NewSecureChannel(worker1, worker2)
+        if err := channel.EstablishSecure(); err != nil {
+            return nil, fmt.Errorf("failed to establish secure channel: %w", err)
+        }
+        // Save new channel
+        if err := c.storage.SaveChannel(ctx, channel); err != nil {
+            return nil, fmt.Errorf("failed to save channel: %w", err)
+        }
+    }
+    return channel, nil
+}
+
 // Helper methods for coordination state
 
 func (c *Coordinator) getChannel(ctx context.Context, worker1, worker2 WorkerID) (*SecureChannel, error) {
