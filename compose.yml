@@ -1,4 +1,7 @@
-devnet:
+version: '3.8'
+
+services:
+  devnet:
     container_name: devnet
     build:
       dockerfile: Dockerfile.devnet
@@ -22,3 +25,9 @@ devnet:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+volumes:
+  devnet_go_mod:
+  devnet_go_build:
+  devnet_db:
+  devnet_chains:

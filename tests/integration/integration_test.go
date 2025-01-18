@@ -2,22 +2,22 @@
 package integration_test
 
 import (
-    "context"
-    "errors"
-    "sync"
-    "testing"
-    "time"
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
 
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/stretchr/testify/require"
-    ginkgo "github.com/onsi/ginkgo/v2"
+	"github.com/ava-labs/hypersdk/chain"
+	ginkgo "github.com/onsi/ginkgo/v2"
+	"github.com/stretchr/testify/require"
 
-    "github.com/rhombus-tech/vm/actions"
-    "github.com/rhombus-tech/vm/compute"
-    "github.com/rhombus-tech/vm/core"
-    "github.com/rhombus-tech/vm/tee"
-    "github.com/rhombus-tech/vm/verifier"
-    "github.com/rhombus-tech/vm/mocks"
+	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/compute"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/tee"
+	"github.com/rhombus-tech/vm/timeserver"
+	"github.com/rhombus-tech/vm/verifier"
 )
 
 type TEEExecutor interface {
@@ -62,47 +62,52 @@ func (m *mockTEE) Execute(_ context.Context, input []byte) (*core.ExecutionResul
     defer m.mu.Unlock()
 
     timeProof := &timeserver.VerifiedTimestamp{
-    Time: time.Now(),
-    Proofs: []*timeserver.TimestampProof{
-        {
-            ServerID:  "server1",
-            Signature: []byte("signature1"),
-            Delay:     100 * time.Millisecond,
+        Time: time.Now(),
+        Proofs: []*timeserver.TimestampProof{
+            {
+                ServerID:  "server1",
+                Signature: []byte("signature1"),
+                Delay:     100 * time.Millisecond,
+            },
+            {
+                ServerID:  "server2",
+                Signature: []byte("signature2"),
+                Delay:     100 * time.Millisecond,
+            },
         },
-        {
-            ServerID:  "server2",
-            Signature: []byte("signature2"),
-            Delay:     100 * time.Millisecond,
+        RegionID:   "test-region",
+        QuorumSize: 2,
+    }
+
+    result := &core.ExecutionResult{
+        Output:       []byte("test output"),
+        StateHash:    []byte("test hash"),
+        TimeProof:    timeProof,
+        RegionID:     "test-region",
+        Attestations: [2]core.TEEAttestation{
+            {
+                EnclaveID:   []byte("sgx-enclave"),
+                Measurement: []byte("measurement1"),
+                Timestamp:   timeProof.Time,
+                Data:        []byte("data1"),
+                Signature:   []byte("sig1"),
+                RegionProof: []byte("region-proof1"),
+            },
+            {
+                EnclaveID:   []byte("sev-enclave"),
+                Measurement: []byte("measurement2"),
+                Timestamp:   timeProof.Time,
+                Data:        []byte("data2"),
+                Signature:   []byte("sig2"),
+                RegionProof: []byte("region-proof2"),
+            },
         },
-    },
-    RegionID:   "test-region",
-    QuorumSize: 2,
+    }
+    
+    return result, nil
 }
 
-result := &core.ExecutionResult{
-    Output:       []byte("test output"),
-    StateHash:    []byte("test hash"),
-    TimeProof:    timeProof,
-    RegionID:     "test-region",
-    Attestations: [2]core.TEEAttestation{
-        {
-            EnclaveID:   []byte("sgx-enclave"),
-            Measurement: []byte("measurement1"),
-            Timestamp:   timeProof.Time,
-            Data:        []byte("data1"),
-            Signature:   []byte("sig1"),
-            RegionProof: []byte("region-proof1"),
-        },
-        {
-            EnclaveID:   []byte("sev-enclave"),
-            Measurement: []byte("measurement2"),
-            Timestamp:   timeProof.Time,
-            Data:        []byte("data2"),
-            Signature:   []byte("sig2"),
-            RegionProof: []byte("region-proof2"),
-        },
-    },
-}
+var _ chain.VM = &MockVM{}
 
 type MockVM struct {
     chain.VM
@@ -124,8 +129,8 @@ func NewMockVM(config *compute.Config) (*MockVM, error) {
 
     return &MockVM{
         config:    config,
-        mockTEE:   mockTee,
         teeClient: teeClient,
+        mockTEE:   mockTee,
         regions:   make(map[string]bool),
     }, nil
 }

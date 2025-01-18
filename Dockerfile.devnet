@@ -37,7 +37,7 @@ COPY . .
 RUN go build -o ${AVALANCHEGO_DIR}/plugins/qCNyZHrs3rZX458wPJXPJJypPf6w423A84jnfbdP2TPEmEE9u \
     ./cmd/morpheusvm
 
-# Create startup script with single-node configuration
+# Create startup script with bare minimum configuration
 RUN echo '#!/bin/bash\n\
 ${AVALANCHEGO_DIR}/avalanchego \
 --http-host=0.0.0.0 \
@@ -45,25 +45,8 @@ ${AVALANCHEGO_DIR}/avalanchego \
 --network-id=local \
 --chain-config-dir=${AVALANCHEGO_DIR}/chains \
 --plugin-dir=${AVALANCHEGO_DIR}/plugins \
---log-level=debug \
 --db-dir=${AVALANCHEGO_DIR}/db \
 --api-admin-enabled=true \
---api-metrics-enabled=true \
---bootstrap-ips="" \
---bootstrap-ids="" \
---staking-enabled=false \
---staking-tls-enabled=false \
---http-tls-enabled=false \
---network-peer-list-gossip-frequency=250ms \
---network-max-reconnect-delay=1s \
---health-check-frequency=2s \
---network-initial-timeout=1s \
---network-minimum-timeout=1s \
---network-maximum-timeout=1s \
---network-timeout-increase=0s \
---network-timeout-reduction=0s \
---snow-sample-size=1 \
---snow-quorum-size=1 \
 ' > /start.sh && chmod +x /start.sh
 
 EXPOSE 9650
