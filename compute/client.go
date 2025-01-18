@@ -6,7 +6,7 @@ import (
    "fmt"
 
    "github.com/rhombus-tech/vm/tee"
-   pb "github.com/rhombus-tech/vm/tee/proto/pb"
+   "github.com/rhombus-tech/vm/tee/proto"
    "google.golang.org/grpc"
    "google.golang.org/grpc/connectivity"
 )
@@ -20,7 +20,7 @@ const (
 type NodeClient struct {
     endpoint   string
     teeBridge  *tee.RustBridge
-    grpcClient pb.TeeExecutionClient
+    grpcClient proto.TeeExecutionClient
     conn       *grpc.ClientConn
 }
 
@@ -50,13 +50,13 @@ func NewNodeClient(config NodeClientConfig) (*NodeClient, error) {
     return &NodeClient{
         endpoint:   config.Endpoint,
         teeBridge:  bridge,
-        grpcClient: pb.NewTeeExecutionClient(conn),
+        grpcClient: proto.NewTeeExecutionClient(conn),
         conn:       conn,
     }, nil
 }
 
 
-func convertProtoToTeeRequest(req *pb.ExecutionRequest) *tee.ExecutionRequest {
+func convertProtoToTeeRequest(req *proto.ExecutionRequest) *tee.ExecutionRequest {
     return &tee.ExecutionRequest{
         IdTo:         req.IdTo,
         FunctionCall: req.FunctionCall,
@@ -66,7 +66,7 @@ func convertProtoToTeeRequest(req *pb.ExecutionRequest) *tee.ExecutionRequest {
 }
 
 // Then modify the Execute method
-func (c *NodeClient) Execute(ctx context.Context, req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
+func (c *NodeClient) Execute(ctx context.Context, req *proto.ExecutionRequest) (*proto.ExecutionResult, error) {
     // Convert proto request to tee request
     teeReq := convertProtoToTeeRequest(req)
     

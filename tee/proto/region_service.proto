@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package teeregion;
 
-option go_package = "./pb;pb";  // Changed this line
+option go_package = "github.com/rhombus-tech/vm/tee/proto";
 
 message RegionMetric {
     string name = 1;

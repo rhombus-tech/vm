@@ -17,7 +17,7 @@ import (
 	"github.com/ava-labs/hypersdk/utils"
 	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/storage"
-	pb "github.com/rhombus-tech/vm/tee/proto"
+	"github.com/rhombus-tech/vm/tee/proto"
 )
 
 const balanceCheckInterval = 500 * time.Millisecond
@@ -26,8 +26,8 @@ type JSONRPCClient struct {
     requester *requester.EndpointRequester
     g         *genesis.DefaultGenesis
     regionTEEs map[string]struct {
-        sgxClient pb.TeeExecutionClient
-        sevClient pb.TeeExecutionClient
+        sgxClient proto.TeeExecutionClient
+        sevClient proto.TeeExecutionClient
     }
 }
 
@@ -66,8 +66,8 @@ func NewJSONRPCClient(uri string) *JSONRPCClient {
         requester: req,
         g:         nil,
         regionTEEs: make(map[string]struct {
-            sgxClient pb.TeeExecutionClient
-            sevClient pb.TeeExecutionClient
+            sgxClient proto.TeeExecutionClient
+            sevClient proto.TeeExecutionClient
         }),
     }
 }
@@ -178,9 +178,9 @@ func CreateParser(genesisBytes []byte) (chain.Parser, error) {
 func (cli *JSONRPCClient) GetRegionAttestations(
     ctx context.Context,
     regionID string,
-) ([]*pb.TEEAttestation, error) {
+) ([]*proto.TEEAttestation, error) {
     resp := new(struct {
-        Attestations []*pb.TEEAttestation `json:"attestations"`
+        Attestations []*proto.TEEAttestation `json:"attestations"`
     })
     err := cli.requester.SendRequest(
         ctx,
@@ -197,8 +197,8 @@ func (cli *JSONRPCClient) GetRegionAttestations(
 
 func (cli *JSONRPCClient) GetRegions(
     ctx context.Context,
-) (*pb.GetRegionsResponse, error) {  // Changed return type
-    resp := new(pb.GetRegionsResponse)
+) (*proto.GetRegionsResponse, error) {  // Changed return type
+    resp := new(proto.GetRegionsResponse)
     err := cli.requester.SendRequest(
         ctx,
         "region.list",

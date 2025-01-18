@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: tee/proto/region_service.proto
 
-package pb
+package proto
 
 import (
 	context "context"

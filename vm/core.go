@@ -22,7 +22,7 @@ import (
 	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/regions"
 	"github.com/rhombus-tech/vm/storage"
-	pb "github.com/rhombus-tech/vm/tee/proto/pb"
+	"github.com/rhombus-tech/vm/tee/proto"
 	"github.com/rhombus-tech/vm/verifier"
 )
 
@@ -282,7 +282,7 @@ func (vm *ShuttleVM) ExecuteInRegion(
     }
 
     // Convert chain.Action to ExecutionRequest
-    req := &pb.ExecutionRequest{
+    req := &proto.ExecutionRequest{
         RegionId: regionID,
         // Add appropriate field mappings based on your action type
         // You may need to type assert the action to get specific fields

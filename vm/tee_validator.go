@@ -11,14 +11,14 @@ import (
 	"github.com/rhombus-tech/vm/actions"
     "github.com/rhombus-tech/vm/core"
     "github.com/rhombus-tech/vm/verifier"
-    pb "github.com/rhombus-tech/vm/tee/proto/pb"
+    "github.com/rhombus-tech/vm/tee/proto"
 )
 
 type Validator struct {
     // Map of regionID to TEE clients
     regionTEEs map[string]struct {
-        sgxClient pb.TeeExecutionClient
-        sevClient pb.TeeExecutionClient
+        sgxClient proto.TeeExecutionClient
+        sevClient proto.TeeExecutionClient
     }
     verifier   *verifier.StateVerifier
     grpcConns  []*grpc.ClientConn // Track connections for cleanup
@@ -28,8 +28,8 @@ type Validator struct {
 func NewValidator(verifier *verifier.StateVerifier) *Validator {
     return &Validator{
         regionTEEs: make(map[string]struct {
-            sgxClient pb.TeeExecutionClient
-            sevClient pb.TeeExecutionClient
+            sgxClient proto.TeeExecutionClient
+            sevClient proto.TeeExecutionClient
         }),
         verifier:  verifier,
         grpcConns: make([]*grpc.ClientConn, 0),
@@ -56,11 +56,11 @@ func (v *Validator) AddRegion(regionID string, sgxEndpoint, sevEndpoint string) 
 
     // Store clients
     v.regionTEEs[regionID] = struct {
-        sgxClient pb.TeeExecutionClient
-        sevClient pb.TeeExecutionClient
+        sgxClient proto.TeeExecutionClient
+        sevClient proto.TeeExecutionClient
     }{
-        sgxClient: pb.NewTeeExecutionClient(sgxConn),
-        sevClient: pb.NewTeeExecutionClient(sevConn),
+        sgxClient: proto.NewTeeExecutionClient(sgxConn),
+        sevClient: proto.NewTeeExecutionClient(sevConn),
     }
 
     return nil
@@ -74,7 +74,7 @@ func (v *Validator) ValidateRegionalAction(ctx context.Context, action *actions.
     }
 
     // Create execution request
-    req := &pb.ExecutionRequest{
+    req := &proto.ExecutionRequest{
         RegionId:     action.RegionID,
         IdTo:         action.IDTo,
         FunctionCall: action.FunctionCall,

@@ -20,6 +20,8 @@ ENV GOMODCACHE /go/pkg/mod
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y docker.io
+
 RUN go install github.com/onsi/ginkgo/v2/ginkgo@v2.13.1
 
 COPY ./go.mod ./go.sum ./
@@ -29,5 +31,6 @@ WORKDIR /app
 
 COPY . ./
 
+RUN chmod +x ./scripts/docker-run.sh
 
-ENTRYPOINT ["/bin/bash", "-c", "./scripts/stop.sh; ./scripts/run.sh && echo 'Devnet started' && tail -f /dev/null"]
+ENTRYPOINT ["/bin/bash", "-c", "./scripts/stop.sh; ./scripts/docker-run.sh && echo 'Devnet started' && tail -f /dev/null"]

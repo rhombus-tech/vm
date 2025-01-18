@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package teeservice;
 
-option go_package = "./pb;pb";  // Changed this line
+option go_package = "github.com/rhombus-tech/vm/tee/proto";
 
 service TeeExecution {
     rpc Execute(ExecutionRequest) returns (ExecutionResult);
@@ -42,7 +42,6 @@ message TEEAttestation {
     string enclave_type = 7;  // "SGX" or "SEV"
 }
 
-// Keep Event message as is
 message Event {
     string id            = 1;
     string function_call = 2;

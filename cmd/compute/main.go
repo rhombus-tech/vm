@@ -12,7 +12,7 @@ import (
 
     "google.golang.org/grpc"
     "github.com/rhombus-tech/vm/compute"
-    pb "github.com/rhombus-tech/vm/tee/proto"
+    "github.com/rhombus-tech/vm/tee/proto"
 )
 
 func main() {
@@ -47,7 +47,7 @@ func main() {
     }
 
     s := grpc.NewServer()
-    pb.RegisterTeeExecutionServer(s, node)
+    proto.RegisterTeeExecutionServer(s, node)
 
     // Handle shutdown gracefully
     go func() {

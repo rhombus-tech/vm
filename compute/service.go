@@ -17,7 +17,7 @@ import (
 	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/tee"
-	pb "github.com/rhombus-tech/vm/tee/proto"
+	"github.com/rhombus-tech/vm/tee/proto"
 	"google.golang.org/grpc"
 )
 
@@ -28,7 +28,7 @@ var (
 )
 
 type ComputeNode struct {
-    pb.UnimplementedTeeExecutionServer
+    proto.UnimplementedTeeExecutionServer
 
     regionID    string
     maxTasks    int
@@ -150,7 +150,7 @@ func (n *ComputeNode) registerWorkers() error {
     return nil
 }
 
-func convertToRustRequest(req *pb.ExecutionRequest) *tee.ExecutionRequest {
+func convertToRustRequest(req *proto.ExecutionRequest) *tee.ExecutionRequest {
     return &tee.ExecutionRequest{
         IdTo:         req.IdTo,
         FunctionCall: req.FunctionCall,
@@ -159,10 +159,10 @@ func convertToRustRequest(req *pb.ExecutionRequest) *tee.ExecutionRequest {
     }
 }
 
-func convertToProtoResult(result *core.ExecutionResult) *pb.ExecutionResult {
-    attestations := make([]*pb.TEEAttestation, len(result.Attestations))
+func convertToProtoResult(result *core.ExecutionResult) *proto.ExecutionResult {
+    attestations := make([]*proto.TEEAttestation, len(result.Attestations))
     for i, att := range result.Attestations {
-        attestations[i] = &pb.TEEAttestation{
+        attestations[i] = &proto.TEEAttestation{
             EnclaveId:   att.EnclaveID,
             Measurement: att.Measurement,
             Timestamp:   att.Timestamp.Format(time.RFC3339),
@@ -171,7 +171,7 @@ func convertToProtoResult(result *core.ExecutionResult) *pb.ExecutionResult {
         }
     }
 
-    return &pb.ExecutionResult{
+    return &proto.ExecutionResult{
         Timestamp:    time.Now().UTC().Format(time.RFC3339),
         Attestations: attestations,
         StateHash:    result.StateHash,
@@ -180,7 +180,7 @@ func convertToProtoResult(result *core.ExecutionResult) *pb.ExecutionResult {
 }
 
 // Add conversion helpers
-func (n *ComputeNode) convertToRustAttestation(att *pb.TEEAttestation) (*AttestationReport, error) {
+func (n *ComputeNode) convertToRustAttestation(att *proto.TEEAttestation) (*AttestationReport, error) {
     timestamp, err := time.Parse(time.RFC3339, att.Timestamp)
     if err != nil {
         return nil, fmt.Errorf("invalid timestamp format: %w", err)
@@ -225,7 +225,7 @@ func (n *ComputeNode) releaseTaskSlot() {
     n.taskLock.Unlock()
 }
 
-func (n *ComputeNode) executeTEE(ctx context.Context, req *pb.ExecutionRequest) (*core.ExecutionResult, error) {
+func (n *ComputeNode) executeTEE(ctx context.Context, req *proto.ExecutionRequest) (*core.ExecutionResult, error) {
     // Convert proto request to Rust format
     rustReq := convertToRustRequest(req)
     
@@ -245,7 +245,7 @@ func (n *ComputeNode) Start(port string) error {
     }
 
     s := grpc.NewServer()
-    pb.RegisterTeeExecutionServer(s, n)
+    proto.RegisterTeeExecutionServer(s, n)
 
     // Handle shutdown gracefully
     ctx, cancel := context.WithCancel(context.Background())
@@ -282,7 +282,7 @@ func (n *ComputeNode) Start(port string) error {
 }
 
 // Update Execute to use conversions
-func (n *ComputeNode) Execute(ctx context.Context, req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
+func (n *ComputeNode) Execute(ctx context.Context, req *proto.ExecutionRequest) (*proto.ExecutionResult, error) {
     if req.RegionId == "" {
         return nil, ErrNoRegion
     }
@@ -368,11 +368,11 @@ func (n *ComputeNode) verifyAttestations(ctx context.Context, attestations [2]co
 }
 
 // Add helper for converting attestations
-func (n *ComputeNode) convertAttestations(attestations [2]core.TEEAttestation) []*pb.TEEAttestation {
-    result := make([]*pb.TEEAttestation, 2)
+func (n *ComputeNode) convertAttestations(attestations [2]core.TEEAttestation) []*proto.TEEAttestation {
+    result := make([]*proto.TEEAttestation, 2)
     
     for i, att := range attestations {
-        result[i] = &pb.TEEAttestation{
+        result[i] = &proto.TEEAttestation{
             EnclaveId:   att.EnclaveID,
             Measurement: att.Measurement,
             Timestamp:   att.Timestamp.Format(time.RFC3339),
@@ -417,11 +417,11 @@ func (n *ComputeNode) exchangeVerification(ctx context.Context, channels map[str
 }
 
 // Update createExecutionResult to convert from RustBridge format to protobuf
-func (n *ComputeNode) createExecutionResult(result *core.ExecutionResult) *pb.ExecutionResult {
-    attestations := make([]*pb.TEEAttestation, 2)
+func (n *ComputeNode) createExecutionResult(result *core.ExecutionResult) *proto.ExecutionResult {
+    attestations := make([]*proto.TEEAttestation, 2)
     
     for i, att := range result.Attestations {
-        attestations[i] = &pb.TEEAttestation{
+        attestations[i] = &proto.TEEAttestation{
             EnclaveId:   att.EnclaveID,
             Measurement: att.Measurement,
             Timestamp:   att.Timestamp.Format(time.RFC3339),
@@ -430,7 +430,7 @@ func (n *ComputeNode) createExecutionResult(result *core.ExecutionResult) *pb.Ex
         }
     }
 
-    return &pb.ExecutionResult{
+    return &proto.ExecutionResult{
         Timestamp:    time.Now().UTC().Format(time.RFC3339),
         Attestations: attestations,
         StateHash:    result.StateHash,
@@ -439,8 +439,8 @@ func (n *ComputeNode) createExecutionResult(result *core.ExecutionResult) *pb.Ex
 }
 
 // Keep GetRegions unchanged as it's part of the gRPC interface
-func (n *ComputeNode) GetRegions(_ context.Context, _ *pb.GetRegionsRequest) (*pb.GetRegionsResponse, error) {
-    region := &pb.Region{
+func (n *ComputeNode) GetRegions(_ context.Context, _ *proto.GetRegionsRequest) (*proto.GetRegionsResponse, error) {
+    region := &proto.Region{
         Id:        n.regionID,
         CreatedAt: time.Now().Format(time.RFC3339),
         WorkerIds: []string{
@@ -448,7 +448,7 @@ func (n *ComputeNode) GetRegions(_ context.Context, _ *pb.GetRegionsRequest) (*p
             fmt.Sprintf("sev-%s", n.regionID),
         },
     }
-    return &pb.GetRegionsResponse{Regions: []*pb.Region{region}}, nil
+    return &proto.GetRegionsResponse{Regions: []*proto.Region{region}}, nil
 }
 
 // Update Close to cleanup both bridge and coordinator

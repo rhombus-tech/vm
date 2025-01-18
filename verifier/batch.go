@@ -11,7 +11,7 @@ import (
 	// you must import "core" not "actions"
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/core"
-	"github.com/rhombus-tech/vm/tee/proto/pb"
+	"github.com/rhombus-tech/vm/tee/proto"
 
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/state"
@@ -265,7 +265,7 @@ func (bv *BatchVerifier) verifyBatchConstraints(ctx context.Context) error {
 func (bv *BatchVerifier) verifyComputeExecution(
     ctx context.Context,
     act *actions.SendEventAction,
-    result *pb.ExecutionResult,
+    result *proto.ExecutionResult,
 ) error {
     // Convert protobuf attestations to core attestations
     attestations := [2]core.TEEAttestation{}

@@ -8,7 +8,7 @@ import (
     "fmt"
 
     "google.golang.org/grpc"
-    pb "github.com/rhombus-tech/vm/tee/proto/pb"
+    "github.com/rhombus-tech/vm/tee/proto"
 )
 
 // TEEType redeclared as uint8 to match existing constants
@@ -16,7 +16,7 @@ type TEEType = uint8
 
 // TEEClient handles communication with a TEE endpoint
 type TEEClient struct {
-    client  pb.TeeExecutionClient
+    client  proto.TeeExecutionClient
     conn    *grpc.ClientConn
     teeType TEEType
 }
@@ -28,7 +28,7 @@ func NewTEEClient(endpoint string, teeType TEEType) (*TEEClient, error) {
         return nil, fmt.Errorf("failed to dial TEE endpoint: %w", err)
     }
 
-    client := pb.NewTeeExecutionClient(conn)
+    client := proto.NewTeeExecutionClient(conn)
 
     return &TEEClient{
         client:  client,
@@ -51,7 +51,7 @@ func (c *TEEClient) GetType() TEEType {
 }
 
 // Execute executes code in the TEE
-func (c *TEEClient) Execute(req *pb.ExecutionRequest) (*pb.ExecutionResult, error) {
+func (c *TEEClient) Execute(req *proto.ExecutionRequest) (*proto.ExecutionResult, error) {
     ctx := context.Background()
     resp, err := c.client.Execute(ctx, req)
     if err != nil {

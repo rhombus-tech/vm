@@ -8,15 +8,15 @@ import (
 
     "google.golang.org/grpc"
 
-    pb "github.com/rhombus-tech/vm/tee/proto/pb"
+    "github.com/rhombus-tech/vm/tee/proto"
     "github.com/rhombus-tech/vm/actions"
     "github.com/rhombus-tech/vm/verifier"
 )
 
 // TEEPair holds SGX and SEV clients for a region
 type TEEPair struct {
-    sgxClient pb.TeeExecutionClient
-    sevClient pb.TeeExecutionClient
+    sgxClient proto.TeeExecutionClient
+    sevClient proto.TeeExecutionClient
     sgxConn   *grpc.ClientConn
     sevConn   *grpc.ClientConn
 }
@@ -24,8 +24,8 @@ type TEEPair struct {
 // Client holds TEE connections and a verifier
 type Client struct {
     // Default (non-regional) TEE clients
-    sgxClient pb.TeeExecutionClient
-    sevClient pb.TeeExecutionClient
+    sgxClient proto.TeeExecutionClient
+    sevClient proto.TeeExecutionClient
     sgxConn   *grpc.ClientConn
     sevConn   *grpc.ClientConn
 
@@ -55,8 +55,8 @@ func NewClient(
     }
 
     client := &Client{
-        sgxClient:  pb.NewTeeExecutionClient(sgxConn),
-        sevClient:  pb.NewTeeExecutionClient(sevConn),
+        sgxClient:  proto.NewTeeExecutionClient(sgxConn),
+        sevClient:  proto.NewTeeExecutionClient(sevConn),
         sgxConn:    sgxConn,
         sevConn:    sevConn,
         verifier:   v,
@@ -86,8 +86,8 @@ func (c *Client) AddRegion(
     }
 
     c.regionTEEs[regionID] = &TEEPair{
-        sgxClient: pb.NewTeeExecutionClient(sgxConn),
-        sevClient: pb.NewTeeExecutionClient(sevConn),
+        sgxClient: proto.NewTeeExecutionClient(sgxConn),
+        sevClient: proto.NewTeeExecutionClient(sevConn),
         sgxConn:   sgxConn,
         sevConn:   sevConn,
     }
@@ -126,14 +126,14 @@ func (c *Client) Close() error {
 // ExecuteAction maintains original functionality while adding regional support
 func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAction) error {
     // Build the request proto
-    req := &pb.ExecutionRequest{
+    req := &proto.ExecutionRequest{
         IdTo:         action.IDTo,
         FunctionCall: action.FunctionCall,
         Parameters:   action.Parameters,
         RegionId:     action.RegionID,
     }
 
-    var sgxResult, sevResult *pb.ExecutionResult
+    var sgxResult, sevResult *proto.ExecutionResult
     var err error
 
     // Check if this is a regional execution
@@ -192,7 +192,7 @@ func (c *Client) ExecuteAction(ctx context.Context, action *actions.SendEventAct
     return nil
 }
 
-func (c *Client) compareResults(sgxRes, sevRes *pb.ExecutionResult) error {
+func (c *Client) compareResults(sgxRes, sevRes *proto.ExecutionResult) error {
     if !bytes.Equal(sgxRes.StateHash, sevRes.StateHash) {
         return fmt.Errorf("state hash mismatch between SGX and SEV results")
     }
