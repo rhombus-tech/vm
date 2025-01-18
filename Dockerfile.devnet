@@ -1,36 +1,71 @@
-#####
-# Source of precompiled avalanchego
-#####
-ARG INSTALL_AVALANCHEGO_VERSION_SHORT=d366a137
-FROM avaplatform/avalanchego:${INSTALL_AVALANCHEGO_VERSION_SHORT} AS avalanchego
-
-#####
-# Base layer with hypersdk
-#####
-FROM golang:1.22-bookworm AS hypersdk-downloader
-
-RUN apt update && DEBIAN_FRONTEND=noninteractive apt install -y curl && apt clean && rm -rf /var/lib/apt/lists/*
-
-
-ARG INSTALL_AVALANCHEGO_VERSION=v1.11.12-rc.2
-COPY --from=avalanchego /avalanchego/build/avalanchego /root/.hypersdk/avalanchego-${INSTALL_AVALANCHEGO_VERSION}/avalanchego
-
-
-ENV GOMODCACHE /go/pkg/mod
+FROM golang:1.22-bookworm
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y docker.io
+# Install required packages
+RUN apt-get update && \
+    apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    net-tools \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN go install github.com/onsi/ginkgo/v2/ginkgo@v2.13.1
+# Set environment variables
+ENV GOMODCACHE=/go/pkg/mod
+ENV AVALANCHEGO_HTTP_HOST=0.0.0.0
+ENV AVALANCHEGO_PUBLIC_IP=0.0.0.0
+ENV VERSION=v1.11.12-rc.2
+ENV HYPERSDK_DIR=/root/.hypersdk
+ENV AVALANCHEGO_DIR=/root/.hypersdk/avalanchego-${VERSION}
 
-COPY ./go.mod ./go.sum ./
+# Create necessary directories
+RUN mkdir -p ${AVALANCHEGO_DIR}/{db,chains,plugins}
 
+# Build and set up avalanchego
+RUN cd ${HYPERSDK_DIR} && \
+    git clone https://github.com/ava-labs/avalanchego.git avalanchego-src && \
+    cd avalanchego-src && \
+    git checkout ${VERSION} && \
+    ./scripts/build.sh && \
+    cp build/avalanchego ${AVALANCHEGO_DIR}/ && \
+    cd .. && \
+    rm -rf avalanchego-src
 
-WORKDIR /app
+# Build morpheusvm
+COPY . .
+RUN go build -o ${AVALANCHEGO_DIR}/plugins/qCNyZHrs3rZX458wPJXPJJypPf6w423A84jnfbdP2TPEmEE9u \
+    ./cmd/morpheusvm
 
-COPY . ./
+# Create startup script with single-node configuration
+RUN echo '#!/bin/bash\n\
+${AVALANCHEGO_DIR}/avalanchego \
+--http-host=0.0.0.0 \
+--public-ip=0.0.0.0 \
+--network-id=local \
+--chain-config-dir=${AVALANCHEGO_DIR}/chains \
+--plugin-dir=${AVALANCHEGO_DIR}/plugins \
+--log-level=debug \
+--db-dir=${AVALANCHEGO_DIR}/db \
+--api-admin-enabled=true \
+--api-metrics-enabled=true \
+--bootstrap-ips="" \
+--bootstrap-ids="" \
+--staking-enabled=false \
+--staking-tls-enabled=false \
+--http-tls-enabled=false \
+--network-peer-list-gossip-frequency=250ms \
+--network-max-reconnect-delay=1s \
+--health-check-frequency=2s \
+--network-initial-timeout=1s \
+--network-minimum-timeout=1s \
+--network-maximum-timeout=1s \
+--network-timeout-increase=0s \
+--network-timeout-reduction=0s \
+--snow-sample-size=1 \
+--snow-quorum-size=1 \
+' > /start.sh && chmod +x /start.sh
 
-RUN chmod +x ./scripts/docker-run.sh
+EXPOSE 9650
 
-ENTRYPOINT ["/bin/bash", "-c", "./scripts/stop.sh; ./scripts/docker-run.sh && echo 'Devnet started' && tail -f /dev/null"]
+ENTRYPOINT ["/start.sh"]
