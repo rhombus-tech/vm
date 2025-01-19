@@ -1,33 +1,28 @@
-version: '3.8'
-
 services:
   devnet:
     container_name: devnet
     build:
       dockerfile: Dockerfile.devnet
-      context: ./
+      context: .
     restart: always
     ports:
       - "9650:9650"
-    networks:
-      - default
-    volumes:
-      - devnet_go_mod:/go/pkg/mod
-      - devnet_go_build:/root/.cache/go-build
-      - devnet_db:/root/.hypersdk/avalanchego-v1.11.12-rc.2/db
-      - devnet_chains:/root/.hypersdk/avalanchego-v1.11.12-rc.2/chains
     environment:
       - AVALANCHEGO_HTTP_HOST=0.0.0.0
       - AVALANCHEGO_PUBLIC_IP=0.0.0.0
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9650/ext/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      - NETWORK_ID=local
+      - STAKING_ENABLED=false
+      - API_ADMIN_ENABLED=true
+      - NETWORK_HEALTH_MIN_CONN_PEERS=0
+      - AVALANCHEGO_DIR=/root/.hypersdk/avalanchego-v1.11.12-rc.2
+      - VERSION=v1.11.12-rc.2
+      - HYPERSDK_DIR=/root/.hypersdk
+    volumes:
+      - devnet_db:${AVALANCHEGO_DIR}/db
+      - type: bind
+        source: ./config/chains
+        target: ${AVALANCHEGO_DIR}/chains
+        read_only: true
 
 volumes:
-  devnet_go_mod:
-  devnet_go_build:
   devnet_db:
-  devnet_chains:

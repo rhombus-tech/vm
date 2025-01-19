@@ -4,12 +4,8 @@ WORKDIR /app
 
 # Install required packages
 RUN apt-get update && \
-    apt-get install -y \
-    curl \
-    git \
-    build-essential \
-    net-tools \
-    && rm -rf /var/lib/apt/lists/*
+    apt-get install -y curl git build-essential net-tools && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set environment variables
 ENV GOMODCACHE=/go/pkg/mod
@@ -19,8 +15,13 @@ ENV VERSION=v1.11.12-rc.2
 ENV HYPERSDK_DIR=/root/.hypersdk
 ENV AVALANCHEGO_DIR=/root/.hypersdk/avalanchego-${VERSION}
 
-# Create necessary directories
-RUN mkdir -p ${AVALANCHEGO_DIR}/{db,chains,plugins}
+# Create necessary directories with proper permissions
+RUN mkdir -p ${AVALANCHEGO_DIR}/db && \
+    mkdir -p ${AVALANCHEGO_DIR}/chains && \
+    mkdir -p ${AVALANCHEGO_DIR}/plugins && \
+    chmod 777 ${AVALANCHEGO_DIR}/db && \
+    chmod 777 ${AVALANCHEGO_DIR}/chains && \
+    chmod 777 ${AVALANCHEGO_DIR}/plugins
 
 # Build and set up avalanchego
 RUN cd ${HYPERSDK_DIR} && \
@@ -28,25 +29,43 @@ RUN cd ${HYPERSDK_DIR} && \
     cd avalanchego-src && \
     git checkout ${VERSION} && \
     ./scripts/build.sh && \
-    cp build/avalanchego ${AVALANCHEGO_DIR}/ && \
-    cd .. && \
-    rm -rf avalanchego-src
+    cp build/avalanchego ${AVALANCHEGO_DIR}/
 
-# Build morpheusvm
-COPY . .
-RUN go build -o ${AVALANCHEGO_DIR}/plugins/qCNyZHrs3rZX458wPJXPJJypPf6w423A84jnfbdP2TPEmEE9u \
-    ./cmd/morpheusvm
+# Copy local files
+COPY . /app/
 
-# Create startup script with bare minimum configuration
+# Move files to their destinations and set permissions
+RUN cp /app/build/morpheusvm ${AVALANCHEGO_DIR}/plugins/qCNyZHrs3rZX458wPJXPJJypPf6w423A84jnfbdP2TPEmEE9u && \
+    cp /app/config/chains/chain-config.json ${AVALANCHEGO_DIR}/chains/C-local.json && \
+    chmod 755 ${AVALANCHEGO_DIR}/plugins/* && \
+    chmod 644 ${AVALANCHEGO_DIR}/chains/*
+
+# Create startup script with updated configuration
 RUN echo '#!/bin/bash\n\
+ls -la ${AVALANCHEGO_DIR}/chains && \
+ls -la ${AVALANCHEGO_DIR}/plugins && \
 ${AVALANCHEGO_DIR}/avalanchego \
 --http-host=0.0.0.0 \
 --public-ip=0.0.0.0 \
+--http-port=9650 \
 --network-id=local \
 --chain-config-dir=${AVALANCHEGO_DIR}/chains \
 --plugin-dir=${AVALANCHEGO_DIR}/plugins \
---db-dir=${AVALANCHEGO_DIR}/db \
+--log-level=debug \
+--staking-enabled=false \
 --api-admin-enabled=true \
+--db-type=memdb \
+--bootstrap-ips="" \
+--bootstrap-ids="" \
+--index-enabled=false \
+--consensus-gossip-frequency=100ms \
+--consensus-shutdown-timeout=1s \
+--health-check-frequency=2s \
+--api-health-enabled=true \
+--network-health-min-conn-peers=0 \
+--network-health-max-drop-rate=1 \
+--network-health-max-outstanding-requests=1024 \
+--network-health-max-send-fail-rate=1 \
 ' > /start.sh && chmod +x /start.sh
 
 EXPOSE 9650

@@ -2,20 +2,24 @@
 package vm_test
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "testing"
-    "time"
+	"context"
+	"fmt"
+	"io/ioutil"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+	"time"
 
-    "github.com/stretchr/testify/require"
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/connectivity"
-    "google.golang.org/grpc/keepalive"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/keepalive"
 
-    "github.com/rhombus-tech/vm/core"
-    "github.com/rhombus-tech/vm/tee/proto"
-    "github.com/rhombus-tech/vm/verifier"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/tee/proto"
+	"github.com/rhombus-tech/vm/verifier"
 )
 
 // TestVM struct stays the same
@@ -34,6 +38,8 @@ func NewTestVM(t *testing.T) *TestVM {
         "localhost:9650",
         "127.0.0.1:9650",
         "devnet:9650",
+        "host.docker.internal:9650",
+        "172.17.0.1:9650",
     }
 
     // Filter out empty endpoints
@@ -47,7 +53,7 @@ func NewTestVM(t *testing.T) *TestVM {
     opts := []grpc.DialOption{
         grpc.WithInsecure(),
         grpc.WithBlock(),
-        grpc.WithTimeout(5 * time.Second), // Add timeout to dial
+        grpc.WithTimeout(5 * time.Second),
         grpc.WithDefaultCallOptions(
             grpc.MaxCallRecvMsgSize(16 * 1024 * 1024),
             grpc.MaxCallSendMsgSize(16 * 1024 * 1024),
@@ -60,22 +66,60 @@ func NewTestVM(t *testing.T) *TestVM {
     }
 
     var conn *grpc.ClientConn
-    var err error
     var connectedEndpoint string
 
     // Try each endpoint
     for _, endpoint := range validEndpoints {
-        t.Logf("Attempting to connect to %s...", endpoint)
+        t.Logf("Testing endpoint: %s", endpoint)
+        
+        // Try TCP connection first to check basic connectivity
+        tcpConn, tcpErr := net.DialTimeout("tcp", endpoint, 5*time.Second)
+        if tcpErr != nil {
+            t.Logf("TCP connection failed: %v", tcpErr)
+            continue
+        }
+        tcpConn.Close()
+        t.Logf("TCP connection successful to %s", endpoint)
 
-        // Try gRPC connection directly first
+        // Try HTTP health check
+        healthURL := fmt.Sprintf("http://%s/ext/health", endpoint)
+        resp, httpErr := http.Post(
+            healthURL,
+            "application/json",
+            strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"health.health"}`),
+        )
+        if httpErr != nil {
+            t.Logf("Health check failed: %v", httpErr)
+        } else {
+            body, _ := ioutil.ReadAll(resp.Body)
+            resp.Body.Close()
+            t.Logf("Health check response: %s", string(body))
+        }
+
+        // Try gRPC connection
         ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+        var err error
         conn, err = grpc.DialContext(ctx, endpoint, opts...)
         cancel()
 
         if err == nil {
             // Check if connection is actually ready
             state := conn.GetState()
+            t.Logf("gRPC connection state: %s", state)
+            
             if state == connectivity.Ready {
+                // Try a simple RPC call
+                client := proto.NewTeeExecutionClient(conn)
+                ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+                _, rpcErr := client.GetRegions(ctx, &proto.GetRegionsRequest{})
+                cancel()
+                
+                if rpcErr != nil {
+                    t.Logf("GetRegions RPC failed: %v", rpcErr)
+                    conn.Close()
+                    continue
+                }
+
                 connectedEndpoint = endpoint
                 break
             }

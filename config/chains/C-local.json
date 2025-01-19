@@ -1,0 +1,13 @@
+{
+  "network-id": "local",
+  "consensus": {
+    "type": "morpheus",
+    "params": {
+      "commitBlock": 1000
+    }
+  },
+  "validatorOnly": false,
+  "feeConfig": {
+    "gasLimit": 15000000
+  }
+}
