@@ -8,6 +8,12 @@ type Config struct {
     MaxWorkers          int
     WorkerTimeout       time.Duration
     
+    // Task settings (new section)
+    MaxTasks            int           // Maximum number of concurrent tasks
+    TaskQueueSize       int           // Size of task queue buffer
+    TaskTimeout         time.Duration // Maximum time for task execution
+    TaskCleanupInterval time.Duration // How often to clean up completed tasks
+    
     // Channel settings
     ChannelTimeout      time.Duration
     MaxMessageSize      int
@@ -22,17 +28,31 @@ type Config struct {
     PersistenceEnabled  bool
 }
 
+
 func DefaultConfig() *Config {
     return &Config{
-        MinWorkers:         2,
-        MaxWorkers:         10,
-        WorkerTimeout:      30 * time.Second,
-        ChannelTimeout:     10 * time.Second,
-        MaxMessageSize:     1024 * 1024, // 1MB
-        EncryptionEnabled:  true,
-        RequireAttestation: true,
-        AttestationTimeout: 5 * time.Second,
-        StoragePath:        "/tmp/coordinator",
-        PersistenceEnabled: true,
+        // Existing worker settings
+        MinWorkers:          2,
+        MaxWorkers:          10,
+        WorkerTimeout:       30 * time.Second,
+        
+        // New task settings
+        MaxTasks:            100,
+        TaskQueueSize:       1000,
+        TaskTimeout:         5 * time.Minute,
+        TaskCleanupInterval: time.Hour,
+        
+        // Existing channel settings
+        ChannelTimeout:      10 * time.Second,
+        MaxMessageSize:      1024 * 1024, // 1MB
+        EncryptionEnabled:   true,
+
+        // Existing TEE settings
+        RequireAttestation:  true,
+        AttestationTimeout:  5 * time.Second,
+        
+        // Existing storage settings
+        StoragePath:         "",
+        PersistenceEnabled:  true,
     }
 }

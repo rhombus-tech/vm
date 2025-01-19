@@ -2,12 +2,19 @@
 package coordination
 
 import (
-    "context"
-    "fmt"
-    "sync"
-    "time"
+	"context"
+	"fmt"
+	"sync"
+	"time"
 
-    "github.com/ava-labs/avalanchego/x/merkledb"
+	"github.com/ava-labs/avalanchego/x/merkledb"
+)
+
+const (
+    TaskStatusPending  = "pending"
+    TaskStatusRunning  = "running"
+    TaskStatusComplete = "complete"
+    TaskStatusFailed   = "failed"
 )
 
 type Coordinator struct {
@@ -16,10 +23,12 @@ type Coordinator struct {
     storage    Storage
     db         merkledb.MerkleDB
 
+    // Keep existing channel for task processing
     tasks      chan *Task
+    // Add map for status tracking
+    taskStatus map[string]*TaskInfo
     done       chan struct{}
     
-    // Track view changes
     viewLock   sync.Mutex
     changes    merkledb.ViewChanges
     
@@ -27,7 +36,7 @@ type Coordinator struct {
     ctx        context.Context
     cancel     context.CancelFunc
 
-    teePairs    map[string][2]WorkerID  // Region -> TEE worker pair mapping
+    teePairs    map[string][2]WorkerID
     regionLock  sync.RWMutex
 }
 
@@ -44,6 +53,15 @@ type Attestation struct {
     Data        []byte    
     Signature   []byte    
     RegionProof []byte    
+}
+
+type TaskInfo struct {
+    Task      *Task
+    Status    string
+    StartTime time.Time
+    EndTime   time.Time
+    Error     error
+    Results   [][]byte
 }
 
 func (c *Coordinator) RegisterRegion(ctx context.Context, regionID string, teeWorkers [2]WorkerID) error {
@@ -107,46 +125,46 @@ func (c *Coordinator) ValidateRegionalOperation(ctx context.Context, regionID st
 }
 
 
-func NewCoordinator(cfg *Config, db merkledb.MerkleDB) (*Coordinator, error) {
-    ctx, cancel := context.WithCancel(context.Background())
-    
-    storage, err := NewStorage(db)
-    if err != nil {
-        cancel()
-        return nil, fmt.Errorf("failed to create storage: %w", err)
+func NewCoordinator(config *Config, db merkledb.MerkleDB) (*Coordinator, error) {
+    if config.TaskCleanupInterval <= 0 {
+        config.TaskCleanupInterval = time.Minute
     }
 
+    ctx, cancel := context.WithCancel(context.Background())
+    
     return &Coordinator{
-        config:    cfg,
-        workers:   make(map[WorkerID]*Worker),
-        storage:   storage,
-        db:        db,
-        tasks:     make(chan *Task, 1000),
-        done:      make(chan struct{}),
-        changes:   merkledb.ViewChanges{},
-        ctx:       ctx,
-        cancel:    cancel,
+        config:     config,
+        workers:    make(map[WorkerID]*Worker),
+        db:         db,
+        tasks:      make(chan *Task, config.MaxTasks),  // Use MaxTasks here
+        taskStatus: make(map[string]*TaskInfo),
+        done:       make(chan struct{}),
+        ctx:        ctx,
+        cancel:     cancel,
         teePairs:   make(map[string][2]WorkerID),
-        regionLock: sync.RWMutex{},
     }, nil
 }
 
+
+
 func (c *Coordinator) Start() error {
-    // Restore any persisted workers
-    if err := c.restoreWorkers(); err != nil {
-        return fmt.Errorf("failed to restore workers: %w", err)
-    }
-
-    // Start task processing
     go c.processTasks()
-
+    go c.cleanupTasks()
     return nil
 }
 
 func (c *Coordinator) Stop() error {
-    c.cancel()
     close(c.done)
-    return c.storage.Close()
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.taskStatus = make(map[string]*TaskInfo)
+    return nil
+}
+
+func (c *Coordinator) AddWorker(worker *Worker) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.workers[worker.ID] = worker
 }
 
 func (c *Coordinator) RegisterWorker(ctx context.Context, id WorkerID, enclaveID []byte) error {
@@ -193,35 +211,88 @@ func (c *Coordinator) UnregisterWorker(ctx context.Context, id WorkerID) error {
 }
 
 func (c *Coordinator) SubmitTask(ctx context.Context, task *Task) error {
+    c.mu.Lock()
+    if len(c.taskStatus) >= c.config.MaxTasks {
+        c.mu.Unlock()
+        return fmt.Errorf("maximum number of concurrent tasks reached")
+    }
+    
+    // Create initial task status
+    c.taskStatus[task.ID] = &TaskInfo{
+        Task:      task,
+        Status:    TaskStatusPending,
+        StartTime: time.Now(),
+    }
+    c.mu.Unlock()
+
+    // Submit to task channel
     select {
     case c.tasks <- task:
         return nil
     case <-ctx.Done():
         return ctx.Err()
-    case <-time.After(c.config.WorkerTimeout):
-        return ErrTimeout
+    default:
+        return fmt.Errorf("task queue full")
     }
 }
+
+func (c *Coordinator) CompleteTask(taskID string) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    if taskInfo, exists := c.taskStatus[taskID]; exists {
+        taskInfo.Status = "complete"
+        taskInfo.EndTime = time.Now()
+    }
+}
+
+
+func (c *Coordinator) ClearTasks() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.taskStatus = make(map[string]*TaskInfo)
+}
+
+
 
 func (c *Coordinator) processTasks() {
     for {
         select {
         case task := <-c.tasks:
+            // Create task info
+            c.mu.Lock()
+            taskInfo := &TaskInfo{
+                Task:      task,
+                Status:    TaskStatusRunning,
+                StartTime: time.Now(),
+            }
+            c.taskStatus[task.ID] = taskInfo
+            c.mu.Unlock()
+
             var err error
             if task.RegionID != "" {
                 err = c.handleRegionalTask(c.ctx, task, task.RegionID)
             } else {
                 err = c.handleTask(c.ctx, task)
             }
+
+            // Update task status
+            c.mu.Lock()
             if err != nil {
-                // Log error but continue processing
-                continue
+                taskInfo.Status = TaskStatusFailed
+                taskInfo.Error = err
+            } else {
+                taskInfo.Status = TaskStatusComplete
             }
+            taskInfo.EndTime = time.Now()
+            c.mu.Unlock()
+
         case <-c.done:
             return
         }
     }
 }
+
 
 func (c *Coordinator) handleTask(ctx context.Context, task *Task) error {
     c.mu.RLock()
@@ -293,6 +364,34 @@ func (c *Coordinator) handleRegionalTask(ctx context.Context, task *Task, region
     return c.handleTask(ctx, task)
 }
 
+func (c *Coordinator) cleanupTasks() {
+    // Use a default interval if not set
+    interval := c.config.TaskCleanupInterval
+    if interval <= 0 {
+        interval = time.Minute // Default to 1 minute if not set
+    }
+    
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ticker.C:
+            c.mu.Lock()
+            for id, taskInfo := range c.taskStatus {
+                if (taskInfo.Status == TaskStatusComplete || 
+                    taskInfo.Status == TaskStatusFailed) &&
+                    time.Since(taskInfo.EndTime) > interval {
+                    delete(c.taskStatus, id)
+                }
+            }
+            c.mu.Unlock()
+        case <-c.done:
+            return
+        }
+    }
+}
+
 func (c *Coordinator) restoreWorkers() error {
     // Implementation would restore worker state from merkledb
     // This is placeholder until we implement worker state serialization
@@ -353,6 +452,46 @@ func (c *Coordinator) GetSecureChannel(ctx context.Context, worker1, worker2 Wor
         }
     }
     return channel, nil
+}
+
+func (c *Coordinator) GetTaskStatus(taskID string) (string, error) {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    taskInfo, exists := c.taskStatus[taskID]
+    if !exists {
+        return "", fmt.Errorf("task %s not found", taskID)
+    }
+
+    return taskInfo.Status, nil
+}
+
+func (c *Coordinator) GetTaskError(taskID string) error {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    taskInfo, exists := c.taskStatus[taskID]
+    if !exists {
+        return fmt.Errorf("task %s not found", taskID)
+    }
+
+    return taskInfo.Error
+}
+
+func (c *Coordinator) GetTaskResults(taskID string) ([][]byte, error) {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+
+    taskInfo, exists := c.taskStatus[taskID]
+    if !exists {
+        return nil, fmt.Errorf("task %s not found", taskID)
+    }
+
+    if taskInfo.Status != TaskStatusComplete {
+        return nil, fmt.Errorf("task %s not complete: %s", taskID, taskInfo.Status)
+    }
+
+    return taskInfo.Results, nil
 }
 
 // Helper methods for coordination state
