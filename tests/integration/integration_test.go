@@ -118,6 +118,7 @@ type MockVM struct {
     teeClient  *tee.Client
     mockTEE    TEEExecutor
     regions    map[string]bool
+    objects    map[string]map[string]*core.ObjectState // map[regionID]map[objectID]ObjectState
     mu         sync.RWMutex
 }
 
@@ -135,8 +136,10 @@ func NewMockVM(config *compute.Config) (*MockVM, error) {
         teeClient: teeClient,
         mockTEE:   mockTee,
         regions:   make(map[string]bool),
+        objects:   make(map[string]map[string]*core.ObjectState),
     }, nil
 }
+
 
 func (vm *MockVM) RegisterRegion(ctx context.Context, regionID, sgxEndpoint, sevEndpoint string) error {
     vm.mu.Lock()
@@ -166,8 +169,55 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
     }
     vm.mu.RUnlock()
 
+    switch a := action.(type) {
+    case *actions.CreateObjectAction:
+        vm.mu.Lock()
+        defer vm.mu.Unlock()
+        
+        if _, exists := vm.objects[regionID]; !exists {
+            vm.objects[regionID] = make(map[string]*core.ObjectState)
+        }
+        vm.objects[regionID][a.ID] = &core.ObjectState{
+            Code:    a.Code,
+            Storage: a.Storage,
+        }
+
+    case *actions.SendEventAction:
+        // Check attestations first
+        if len(a.Attestations) != 2 {  // Changed from == 0 to != 2
+            return nil, errors.New("invalid attestation count")
+        }
+
+        // Check object existence
+        vm.mu.RLock()
+        regionObjects, exists := vm.objects[regionID]
+        if !exists || len(regionObjects) == 0 {
+            vm.mu.RUnlock()
+            return nil, errors.New("object not found in region")
+        }
+        
+        _, exists = regionObjects[a.IDTo]
+        vm.mu.RUnlock()
+        if !exists {
+            return nil, errors.New("object not found in region")
+        }
+
+        // Check attestation timestamps
+        for _, att := range a.Attestations {
+            if att.Timestamp.IsZero() {
+                return nil, errors.New("invalid attestation timestamp")
+            }
+            if time.Since(att.Timestamp) > 24*time.Hour {
+                return nil, errors.New("attestation timestamp expired")
+            }
+        }
+    }
+
     return vm.mockTEE.Execute(ctx, []byte("test"))
 }
+
+
+
 
 func setupTestEnvironment(t *testing.T) (*MockVM, string) {
     require := require.New(t)
@@ -189,6 +239,13 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
     regionID := "test-region"
     err = testVM.RegisterRegion(context.Background(), regionID, "mock://sgx", "mock://sev")
     require.NoError(err)
+
+    // Create initial test object
+    testVM.objects[regionID] = make(map[string]*core.ObjectState)
+    testVM.objects[regionID]["test-object"] = &core.ObjectState{
+        Code:    []byte("test code"),
+        Storage: []byte("test storage"),
+    }
 
     return testVM, regionID
 }
@@ -268,4 +325,234 @@ func TestRegionManagement(t *testing.T) {
     _, err = testVM.ExecuteInRegion(ctx, "missing-region", &actions.CreateObjectAction{})
     require.Error(err)
     require.Contains(err.Error(), "region not found")
+}
+
+func createTestAction() chain.Action {
+    return &actions.CreateObjectAction{
+        ID:       "test-object",
+        Code:     []byte("test code"),
+        Storage:  []byte("test storage"),
+    }
+}
+
+// Add new tests
+func TestTimeProofVerification(t *testing.T) {
+    testVM, regionID := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    // Test timestamp ordering
+    result1, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+    require.NoError(err)
+    time.Sleep(100 * time.Millisecond)
+    result2, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+    require.NoError(err)
+
+    // Verify timestamps are monotonically increasing
+    require.True(result2.TimeProof.Time.After(result1.TimeProof.Time))
+    
+    // Verify quorum of time proofs
+    require.Len(result1.TimeProof.Proofs, 2)
+}
+
+func TestConcurrentRegionOperations(t *testing.T) {
+    testVM, regionID := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    var wg sync.WaitGroup
+    numOperations := 10
+    errors := make(chan error, numOperations)
+
+    for i := 0; i < numOperations; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            _, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+            if err != nil {
+                errors <- err
+            }
+        }()
+    }
+
+    wg.Wait()
+    close(errors)
+
+    for err := range errors {
+        require.NoError(err)
+    }
+}
+
+func TestRegionStateIsolation(t *testing.T) {
+    testVM, _ := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    // Create two regions
+    region1 := "region-1"
+    region2 := "region-2"
+    err := testVM.RegisterRegion(ctx, region1, "mock://sgx1", "mock://sev1")
+    require.NoError(err)
+    err = testVM.RegisterRegion(ctx, region2, "mock://sgx2", "mock://sev2")
+    require.NoError(err)
+
+    // Execute in region1
+    action1 := &actions.CreateObjectAction{
+        ID:       "test-object",
+        RegionID: region1,
+        Code:     []byte("test code"),
+        Storage:  []byte("test storage"),
+    }
+    _, err = testVM.ExecuteInRegion(ctx, region1, action1)
+    require.NoError(err)
+
+    // Try to access object from region2
+    action2 := &actions.SendEventAction{
+        IDTo:         "test-object",
+        RegionID:     region2,
+        FunctionCall: "test",
+        Parameters:   []byte("test"),
+    }
+    _, err = testVM.ExecuteInRegion(ctx, region2, action2)
+    require.Error(err)
+    require.Contains(err.Error(), "object not found in region")
+}
+
+
+func TestAttestationChain(t *testing.T) {
+    testVM, regionID := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    // First create an object
+    createAction := &actions.CreateObjectAction{
+        ID:       "chain-test",
+        RegionID: regionID,
+        Code:     []byte("test code"),
+        Storage:  []byte("test storage"),
+    }
+    result1, err := testVM.ExecuteInRegion(ctx, regionID, createAction)
+    require.NoError(err)
+
+    // Use attestations from first result
+    action2 := &actions.SendEventAction{
+        IDTo:         "chain-test",
+        RegionID:     regionID,
+        FunctionCall: "test",
+        Parameters:   []byte("test"),
+        Attestations: result1.Attestations,
+    }
+    result2, err := testVM.ExecuteInRegion(ctx, regionID, action2)
+    require.NoError(err)
+    require.Equal(result1.StateHash, result2.Attestations[0].Data)
+}
+func TestErrorHandling(t *testing.T) {
+    testVM, regionID := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    // Create an object first
+    createAction := &actions.CreateObjectAction{
+        ID:       "test-object",
+        RegionID: regionID,
+        Code:     []byte("test code"),
+        Storage:  []byte("test storage"),
+    }
+    _, err := testVM.ExecuteInRegion(ctx, regionID, createAction)
+    require.NoError(err)
+
+    // Test case 1: Empty attestations array
+    emptyAction := &actions.SendEventAction{
+        IDTo:         "test-object",
+        RegionID:     regionID,
+        FunctionCall: "test",
+        Parameters:   []byte("test"),
+        Attestations: [2]core.TEEAttestation{}, // Empty attestations
+    }
+    _, err = testVM.ExecuteInRegion(ctx, regionID, emptyAction)
+    require.Error(err)
+    require.Contains(err.Error(), "invalid attestation count")
+
+    // Test case 2: Invalid timestamps
+    oldTime := time.Now().Add(-24 * time.Hour)
+    timeAction := &actions.SendEventAction{
+        IDTo:         "test-object",
+        RegionID:     regionID,
+        FunctionCall: "test",
+        Parameters:   []byte("test"),
+        Attestations: [2]core.TEEAttestation{
+            {
+                EnclaveID:   []byte("test"),
+                Measurement: []byte("test"),
+                Timestamp:   oldTime,
+            },
+            {
+                EnclaveID:   []byte("test"),
+                Measurement: []byte("test"),
+                Timestamp:   oldTime,
+            },
+        },
+    }
+    _, err = testVM.ExecuteInRegion(ctx, regionID, timeAction)
+    require.Error(err)
+    require.Contains(err.Error(), "attestation timestamp expired")
+
+    // Test case 3: Non-existent object
+    nonExistentAction := &actions.SendEventAction{
+        IDTo:         "non-existent",
+        RegionID:     regionID,
+        FunctionCall: "test",
+        Parameters:   []byte("test"),
+        Attestations: [2]core.TEEAttestation{
+            {
+                EnclaveID:   []byte("test"),
+                Measurement: []byte("test"),
+                Timestamp:   time.Now(),
+            },
+            {
+                EnclaveID:   []byte("test"),
+                Measurement: []byte("test"),
+                Timestamp:   time.Now(),
+            },
+        },
+    }
+    _, err = testVM.ExecuteInRegion(ctx, regionID, nonExistentAction)
+    require.Error(err)
+    require.Contains(err.Error(), "object not found in region")
+}
+func TestRegionLifecycle(t *testing.T) {
+    testVM, _ := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    regionID := "lifecycle-test"
+
+    // Register region
+    err := testVM.RegisterRegion(ctx, regionID, "mock://sgx", "mock://sev")
+    require.NoError(err)
+
+    // Create an object first
+    createAction := &actions.CreateObjectAction{
+        ID:       "test-object",
+        RegionID: regionID,
+        Code:     []byte("test code"),
+        Storage:  []byte("test storage"),
+    }
+    result, err := testVM.ExecuteInRegion(ctx, regionID, createAction)
+    require.NoError(err)
+
+    // Update region
+    err = testVM.RegisterRegion(ctx, regionID, "mock://sgx2", "mock://sev2")
+    require.Error(err) // Should fail - already exists
+
+    // Verify region state preserved
+    action := &actions.SendEventAction{
+        IDTo:         "test-object",
+        RegionID:     regionID,
+        FunctionCall: "test",
+        Parameters:   []byte("test"),
+        Attestations: result.Attestations,
+    }
+    _, err = testVM.ExecuteInRegion(ctx, regionID, action)
+    require.NoError(err)
 }
