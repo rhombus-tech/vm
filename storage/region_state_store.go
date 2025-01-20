@@ -41,9 +41,7 @@ func NewRegionStateStore(sm *StateManager) *RegionStateStore {
 }
 
 func (s *RegionStateStore) GetRegionConfig(regionID string) (*regions.RegionConfig, error) {
-    // Create background context since it's not part of the interface
     ctx := context.Background()
-    
     key := makeRegionKey("config", regionID, "")
     value, err := s.stateManager.GetValue(ctx, key)
     if err != nil {
@@ -58,10 +56,9 @@ func (s *RegionStateStore) GetRegionConfig(regionID string) (*regions.RegionConf
     return &config, nil
 }
 
+
 func (s *RegionStateStore) SetRegionConfig(regionID string, config *regions.RegionConfig) error {
-    // Create background context since it's not part of the interface
     ctx := context.Background()
-    
     data, err := json.Marshal(config)
     if err != nil {
         return fmt.Errorf("failed to marshal region config: %w", err)
@@ -74,6 +71,7 @@ func (s *RegionStateStore) SetRegionConfig(regionID string, config *regions.Regi
 
     return nil
 }
+
 
 
 
@@ -109,8 +107,8 @@ func (s *RegionStateStore) LoadRegion(ctx context.Context, id string) (map[strin
 }
 
 // DeleteRegion removes a region configuration
-func (s *RegionStateStore) DeleteRegion(ctx context.Context, id string) error {
-    key := makeRegionKey("config", id, "")
+func (s *RegionStateStore) DeleteRegionConfig(ctx context.Context, regionID string) error {
+    key := makeRegionKey("config", regionID, "")
     return s.stateManager.Remove(ctx, key)
 }
 
@@ -165,11 +163,6 @@ func (s *RegionStateStore) ListRegions(ctx context.Context) ([]string, error) {
     return regions, nil
 }
 
-func (s *RegionStateStore) DeleteRegionConfig(ctx context.Context, regionID string) error {
-    key := makeRegionKey("config", regionID, "")
-    return s.stateManager.Remove(ctx, key)
-}
-
 
 // incrementBytes is used for range scanning operations to get the next possible key.
 // Currently unused but will be implemented when range queries are added.
@@ -200,4 +193,62 @@ func (s *RegionStateStore) GetRegionProof(ctx context.Context, regionID string) 
     }
 
     return proof, nil
+}
+
+func (s *RegionStateStore) GetTEEState(ctx context.Context, regionID, pairID string) (*regions.TEEPairState, error) {
+    key := makeRegionKey("state", regionID, pairID)
+    value, err := s.stateManager.GetValue(ctx, key)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get TEE state: %w", err)
+    }
+
+    var state regions.TEEPairState
+    if err := json.Unmarshal(value, &state); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal TEE state: %w", err)
+    }
+
+    return &state, nil
+}
+
+func (s *RegionStateStore) SaveTEEState(ctx context.Context, regionID, pairID string, state *regions.TEEPairState) error {
+    data, err := json.Marshal(state)
+    if err != nil {
+        return fmt.Errorf("failed to marshal TEE state: %w", err)
+    }
+
+    key := makeRegionKey("state", regionID, pairID)
+    if err := s.stateManager.Insert(ctx, key, data); err != nil {
+        return fmt.Errorf("failed to store TEE state: %w", err)
+    }
+
+    return nil
+}
+
+func (s *RegionStateStore) GetMetrics(ctx context.Context, regionID, pairID string) (*regions.TEEPairMetrics, error) {
+    key := makeRegionKey("metrics", regionID, pairID)
+    value, err := s.stateManager.GetValue(ctx, key)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get metrics: %w", err)
+    }
+
+    var metrics regions.TEEPairMetrics
+    if err := json.Unmarshal(value, &metrics); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal metrics: %w", err)
+    }
+
+    return &metrics, nil
+}
+
+func (s *RegionStateStore) SaveMetrics(ctx context.Context, regionID, pairID string, metrics *regions.TEEPairMetrics) error {
+    data, err := json.Marshal(metrics)
+    if err != nil {
+        return fmt.Errorf("failed to marshal metrics: %w", err)
+    }
+
+    key := makeRegionKey("metrics", regionID, pairID)
+    if err := s.stateManager.Insert(ctx, key, data); err != nil {
+        return fmt.Errorf("failed to store metrics: %w", err)
+    }
+
+    return nil
 }
