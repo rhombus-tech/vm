@@ -2,9 +2,10 @@
 package regions
 
 import (
-    "context"
-    "fmt"
-    "time"
+	"context"
+	"fmt"
+	"log"
+	"time"
 )
 
 // HealthChecker handles TEE health monitoring
@@ -85,12 +86,14 @@ func (hc *HealthChecker) checkRegion(ctx context.Context, regionID string) error
     for _, pair := range pairs {
         status, err := hc.checkTEEPair(ctx, regionID, pair.ID)
         if err != nil {
-            fmt.Printf("Error checking TEE pair %s: %v\n", pair.ID, err)
+            // Log error but continue checking other pairs
+            log.Printf("Error checking TEE pair %s: %v", pair.ID, err)
             continue
         }
 
-        if err := hc.updatePairHealth(ctx, regionID, pair.ID, status); err != nil {
-            fmt.Printf("Error updating TEE pair health %s: %v\n", pair.ID, err)
+        // Update health status through manager
+        if err := hc.manager.UpdateRegionHealth(ctx, regionID, status); err != nil {
+            log.Printf("Error updating health status for region %s: %v", regionID, err)
         }
     }
 

@@ -2,10 +2,11 @@
 package regions
 
 import (
-    "context"
-    "fmt"
-    "sync"
-    "time"
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
 )
 
 type PerformanceMonitor struct {
@@ -13,6 +14,7 @@ type PerformanceMonitor struct {
     interval    time.Duration
     metrics     map[string]map[string]*PerformanceMetrics
     mu          sync.RWMutex
+    done        chan struct{}
 }
 
 type PerformanceMetrics struct {
@@ -28,10 +30,11 @@ func NewPerformanceMonitor(manager *RegionManager, interval time.Duration) *Perf
         manager:  manager,
         interval: interval,
         metrics:  make(map[string]map[string]*PerformanceMetrics),
+        done:     make(chan struct{}),
     }
 }
 
-func (pm *PerformanceMonitor) StartMonitoring(ctx context.Context) {
+func (pm *PerformanceMonitor) Start(ctx context.Context) {
     go func() {
         ticker := time.NewTicker(pm.interval)
         defer ticker.Stop()
@@ -40,8 +43,10 @@ func (pm *PerformanceMonitor) StartMonitoring(ctx context.Context) {
             select {
             case <-ticker.C:
                 if err := pm.collectMetrics(ctx); err != nil {
-                    fmt.Printf("Performance monitoring error: %v\n", err)
+                    log.Printf("Performance monitoring error: %v\n", err)
                 }
+            case <-pm.done:
+                return
             case <-ctx.Done():
                 return
             }
@@ -49,42 +54,64 @@ func (pm *PerformanceMonitor) StartMonitoring(ctx context.Context) {
     }()
 }
 
+// Stop stops the monitoring process
+func (pm *PerformanceMonitor) Stop() {
+    close(pm.done)
+}
+
+
 func (pm *PerformanceMonitor) collectMetrics(ctx context.Context) error {
+    pm.mu.Lock()
+    defer pm.mu.Unlock()
+
     regions := pm.manager.ListRegions()
     
     for _, regionID := range regions {
         pairs, err := pm.manager.GetTEEPairs(regionID)
         if err != nil {
-            fmt.Printf("Error getting TEE pairs for region %s: %v\n", regionID, err)
+            log.Printf("Error getting TEE pairs for region %s: %v", regionID, err)
             continue
         }
 
         for _, pair := range pairs {
-            metrics, err := pm.collectPairMetrics(ctx, regionID, pair.ID)
-            if err != nil {
-                fmt.Printf("Error collecting metrics for pair %s: %v\n", pair.ID, err)
-                continue
+            metrics := pm.collectPairMetrics(ctx, regionID, pair.ID)
+            
+            // Store metrics
+            if pm.metrics[regionID] == nil {
+                pm.metrics[regionID] = make(map[string]*PerformanceMetrics)
             }
+            pm.metrics[regionID][pair.ID] = metrics
 
-            pm.updateMetrics(regionID, pair.ID, metrics)
+            // Update metrics in storage
+            if err := pm.manager.store.SaveMetrics(ctx, regionID, pair.ID, &TEEPairMetrics{
+                PairID:          pair.ID,
+                LastHealthCheck: time.Now(),
+                CPUUsage:        metrics.CPU,
+                MemoryUsage:     metrics.Memory,
+                NetworkLatency:  float64(metrics.NetworkLatency.Milliseconds()),
+                PendingTasks:    uint64(metrics.TaskQueue),
+                ExecutionTime:   metrics.NetworkLatency,
+            }); err != nil {
+                log.Printf("Error saving metrics for pair %s: %v", pair.ID, err)
+            }
         }
     }
 
     return nil
 }
 
-func (pm *PerformanceMonitor) collectPairMetrics(ctx context.Context, regionID, pairID string) (*PerformanceMetrics, error) {
-    // Here you would implement actual metric collection from your TEE systems
-    // This is a placeholder that should be replaced with real metric collection
-    return &PerformanceMetrics{
-        CPU:            0.5,  // Example values
-        Memory:         0.6,
-        NetworkLatency: time.Millisecond * 100,
-        TaskQueue:      5,
-        LastUpdate:     time.Now(),
-    }, nil
-}
 
+
+func (pm *PerformanceMonitor) collectPairMetrics(ctx context.Context, regionID, pairID string) *PerformanceMetrics {
+    // Add real metric collection logic here
+    return &PerformanceMetrics{
+        CPU:            0.0,
+        Memory:         0.0,
+        NetworkLatency: 100 * time.Millisecond,
+        TaskQueue:      0,
+        LastUpdate:     time.Now(),
+    }
+}
 func (pm *PerformanceMonitor) updateMetrics(regionID, pairID string, metrics *PerformanceMetrics) {
     pm.mu.Lock()
     defer pm.mu.Unlock()

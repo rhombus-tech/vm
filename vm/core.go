@@ -4,8 +4,11 @@ package vm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"math"
+	"net/http"
 	"sync"
 	"time"
 
@@ -15,11 +18,14 @@ import (
 	"github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/logging"
 	"github.com/ava-labs/avalanchego/x/merkledb"
+	"github.com/ava-labs/hypersdk/api"
 	"github.com/ava-labs/hypersdk/chain"
 	"go.uber.org/zap"
 
 	"github.com/rhombus-tech/vm/actions"
+	"github.com/rhombus-tech/vm/api/jsonrpc"
 	"github.com/rhombus-tech/vm/compute"
+	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/regions"
@@ -44,6 +50,8 @@ type ShuttleVM struct {
     validatorMgr *validatorManager
     regionManager *regions.RegionManager
     coordinator  *coordination.Coordinator
+    monitoringCtx    context.Context
+    monitoringCancel context.CancelFunc
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
@@ -92,7 +100,7 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
 func (vm *ShuttleVM) Initialize(
     ctx context.Context,
     snowCtx *snow.Context,
-    db database.Database,  // You should have this from the VM initialization
+    db database.Database,
     genesisBytes []byte,
     upgradeBytes []byte,
     configBytes []byte,
@@ -102,7 +110,7 @@ func (vm *ShuttleVM) Initialize(
 ) error {
     // Store core dependencies
     vm.ctx = snowCtx
-    vm.db = db  // Store the database reference
+    vm.db = db
     vm.appSender = appSender
     vm.chainID = snowCtx.ChainID
 
@@ -121,11 +129,11 @@ func (vm *ShuttleVM) Initialize(
         return fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    // Create state manager with all three required arguments
+    // Create state manager
     stateManager, err := storage.NewStateManager(
-        vm.db,       // database.Database
-        dbWrapper,   // state.Mutable
-        merkleDB,    // merkledb.MerkleDB
+        vm.db,
+        dbWrapper,
+        merkleDB,
     )
     if err != nil {
         return fmt.Errorf("failed to create state manager: %w", err)
@@ -138,7 +146,7 @@ func (vm *ShuttleVM) Initialize(
         MaxWorkers:         10,
         WorkerTimeout:      30 * time.Second,
         ChannelTimeout:     10 * time.Second,
-        MaxMessageSize:     1024 * 1024, // 1MB
+        MaxMessageSize:     1024 * 1024,
         EncryptionEnabled:  true,
         RequireAttestation: true,
         AttestationTimeout: 5 * time.Second,
@@ -157,50 +165,68 @@ func (vm *ShuttleVM) Initialize(
         return fmt.Errorf("failed to start coordinator: %w", err)
     }
 
-    // Set up verifier with coordination-aware state management
+    // Set up verifier
     if vm.verifier == nil {
         vm.verifier = verifier.New(dbWrapper)
     }
     vm.verifier.SetState(dbWrapper)
 
-    // Initialize compute node connections if not in verification-only mode
+    // Create monitoring context with cancellation
+    vm.monitoringCtx, vm.monitoringCancel = context.WithCancel(context.Background())
+
+    // Initialize region store and manager
+    regionStore := storage.NewRegionStateStore(vm.stateManager)
+    vm.regionManager = regions.NewRegionManager(regionStore)
+
+    // Initialize validators
+    vm.initializeValidators()
+
+    // Initialize compute connections and register workers
     if !vm.config.VerificationOnly {
         if err := vm.initializeComputeConnections(ctx); err != nil {
             return fmt.Errorf("failed to initialize compute connections: %w", err)
         }
+
+        // Register compute nodes as workers and set up regions
+        for regionID := range vm.computeNodes {
+            if err := vm.setupRegionWorkers(ctx, regionID); err != nil {
+                return err
+            }
+        }
     }
 
-    regionStore := storage.NewRegionStateStore(vm.stateManager)
-    vm.regionManager = regions.NewRegionManager(regionStore)
+    // Start region monitoring
+    if err := vm.regionManager.StartMonitoring(vm.monitoringCtx); err != nil {
+        return fmt.Errorf("failed to start region monitoring: %w", err)
+    }
 
-    // Initialize validators with coordinator awareness
-    vm.initializeValidators()
+    return nil
+}
 
-    // Register compute nodes as workers and set up regions
-    for regionID := range vm.computeNodes {
-        sgxWorkerID := coordination.WorkerID(fmt.Sprintf("sgx-%s", regionID))
-        sevWorkerID := coordination.WorkerID(fmt.Sprintf("sev-%s", regionID))
+// Move region worker setup to separate method for clarity
+func (vm *ShuttleVM) setupRegionWorkers(ctx context.Context, regionID string) error {
+    sgxWorkerID := coordination.WorkerID(fmt.Sprintf("sgx-%s", regionID))
+    sevWorkerID := coordination.WorkerID(fmt.Sprintf("sev-%s", regionID))
 
-        // Register SGX worker
-        if err := vm.coordinator.RegisterWorker(ctx, sgxWorkerID, []byte("sgx-enclave")); err != nil {
-            return fmt.Errorf("failed to register SGX worker for region %s: %w", regionID, err)
-        }
+    // Register SGX worker
+    if err := vm.coordinator.RegisterWorker(ctx, sgxWorkerID, []byte("sgx-enclave")); err != nil {
+        return fmt.Errorf("failed to register SGX worker for region %s: %w", regionID, err)
+    }
 
-        // Register SEV worker
-        if err := vm.coordinator.RegisterWorker(ctx, sevWorkerID, []byte("sev-enclave")); err != nil {
-            return fmt.Errorf("failed to register SEV worker for region %s: %w", regionID, err)
-        }
+    // Register SEV worker
+    if err := vm.coordinator.RegisterWorker(ctx, sevWorkerID, []byte("sev-enclave")); err != nil {
+        return fmt.Errorf("failed to register SEV worker for region %s: %w", regionID, err)
+    }
 
-        // Register region with worker pair
-        if err := vm.coordinator.RegisterRegion(ctx, regionID, [2]coordination.WorkerID{sgxWorkerID, sevWorkerID}); err != nil {
-            return fmt.Errorf("failed to register region %s: %w", regionID, err)
-        }
+    // Register region with worker pair
+    if err := vm.coordinator.RegisterRegion(ctx, regionID, [2]coordination.WorkerID{sgxWorkerID, sevWorkerID}); err != nil {
+        return fmt.Errorf("failed to register region %s: %w", regionID, err)
+    }
 
-        // Set up secure channel between workers
-        channel := coordination.NewSecureChannel(sgxWorkerID, sevWorkerID)
-        if err := channel.EstablishSecure(); err != nil {
-            return fmt.Errorf("failed to establish secure channel for region %s: %w", regionID, err)
-        }
+    // Set up secure channel between workers
+    channel := coordination.NewSecureChannel(sgxWorkerID, sevWorkerID)
+    if err := channel.EstablishSecure(); err != nil {
+        return fmt.Errorf("failed to establish secure channel for region %s: %w", regionID, err)
     }
 
     return nil
@@ -272,18 +298,21 @@ func (vm *ShuttleVM) ValidateAndExecute(ctx context.Context, code []byte, action
     return nil
 }
 
-// ExecuteInRegion handles sending computation requests to C-nodes
 func (vm *ShuttleVM) ExecuteInRegion(
     ctx context.Context,
     regionID string,
     action chain.Action,
 ) (*compute.ExecutionResult, error) {
-    startTime := time.Now() // Define start time explicitly
+    // Start timing the entire execution
+    execStart := time.Now()
 
-    // Get region config to access TEE pairs
-    _, err := vm.regionManager.GetRegionConfig(regionID) // Changed to _ since region isn't used
+    // Check region health first
+    health, err := vm.regionManager.GetRegionHealth(ctx, regionID)
     if err != nil {
-        return nil, fmt.Errorf("failed to get region config: %w", err)
+        return nil, fmt.Errorf("failed to get region health: %w", err)
+    }
+    if health.Status != "healthy" {
+        return nil, fmt.Errorf("region %s is not healthy: %s", regionID, health.Status)
     }
 
     // Select optimal TEE pair using load balancer
@@ -306,7 +335,7 @@ func (vm *ShuttleVM) ExecuteInRegion(
     // Convert chain.Action to ExecutionRequest
     req := &proto.ExecutionRequest{
         RegionId: regionID,
-        // Remove PairId as it's not in the proto definition
+        DetailedProof: true,
     }
 
     // Add action-specific fields
@@ -322,7 +351,7 @@ func (vm *ShuttleVM) ExecuteInRegion(
         return nil, fmt.Errorf("unsupported action type: %T", action)
     }
 
-    // Execute on both TEEs in parallel
+    // Execute on both TEEs in parallel with monitoring
     var wg sync.WaitGroup
     var sgxResult, sevResult *proto.ExecutionResult
     var sgxErr, sevErr error
@@ -330,19 +359,32 @@ func (vm *ShuttleVM) ExecuteInRegion(
     wg.Add(2)
     go func() {
         defer wg.Done()
+        sgxStart := time.Now()
         sgxResult, sgxErr = sgxClient.Execute(ctx, req)
+        if sgxErr == nil {
+            vm.updateTEEMetrics(ctx, regionID, selectedPair.ID, "sgx", time.Since(sgxStart))
+        }
     }()
     go func() {
         defer wg.Done()
+        sevStart := time.Now()
         sevResult, sevErr = sevClient.Execute(ctx, req)
+        if sevErr == nil {
+            vm.updateTEEMetrics(ctx, regionID, selectedPair.ID, "sev", time.Since(sevStart))
+        }
     }()
     wg.Wait()
 
-    // Check for errors
+    // Calculate total execution time
+    totalExecTime := time.Since(execStart)
+
+    // Handle errors with metric updates
     if sgxErr != nil {
+        vm.updateTEEError(ctx, regionID, selectedPair.ID, "sgx", sgxErr)
         return nil, fmt.Errorf("SGX execution failed: %w", sgxErr)
     }
     if sevErr != nil {
+        vm.updateTEEError(ctx, regionID, selectedPair.ID, "sev", sevErr)
         return nil, fmt.Errorf("SEV execution failed: %w", sevErr)
     }
 
@@ -366,29 +408,33 @@ func (vm *ShuttleVM) ExecuteInRegion(
 
     // Verify attestations
     if err := vm.verifier.VerifyAttestationPair(ctx, attestations, nil); err != nil {
+        vm.updateVerificationError(ctx, regionID, selectedPair.ID, err)
         return nil, fmt.Errorf("attestation verification failed: %w", err)
     }
 
     // Verify results match
     if !bytes.Equal(sgxResult.StateHash, sevResult.StateHash) {
-        return nil, fmt.Errorf("state hash mismatch between SGX and SEV")
+        err := fmt.Errorf("state hash mismatch between SGX and SEV")
+        vm.updateVerificationError(ctx, regionID, selectedPair.ID, err)
+        return nil, err
     }
 
-    // Update metrics for the pair
-    metrics := &regions.TEEPairMetrics{
-        PairID:         selectedPair.ID,
-        SGXEndpoint:    selectedPair.SGXEndpoint,
-        SEVEndpoint:    selectedPair.SEVEndpoint,
-        LoadFactor:     0.0, // Calculate based on your requirements
-        SuccessRate:    1.0, // This execution was successful
-        ExecutionTime:  time.Since(startTime),
-        LastHealthCheck: time.Now(),
-        LastHealthy:    time.Now(),
-    }
-
-    if err := vm.regionManager.GetBalancer().UpdatePairMetrics(ctx, regionID, selectedPair.ID, metrics); err != nil {
-        // Log the error but don't fail the execution
-        log.Printf("Failed to update metrics: %v", err)
+    // Update final metrics
+    if err := vm.regionManager.UpdateMetrics(ctx, regionID, selectedPair.ID, func(metrics *regions.TEEPairMetrics) {
+        metrics.PairID = selectedPair.ID
+        metrics.SGXEndpoint = selectedPair.SGXEndpoint
+        metrics.SEVEndpoint = selectedPair.SEVEndpoint
+        metrics.LoadFactor = calculateLoadFactor(totalExecTime)
+        metrics.SuccessRate = 1.0
+        metrics.ExecutionTime = totalExecTime
+        metrics.LastHealthCheck = time.Now()
+        metrics.LastHealthy = time.Now()
+        metrics.CPUUsage = getCPUUsage(sgxResult, sevResult)
+        metrics.MemoryUsage = getMemoryUsage(sgxResult, sevResult)
+        metrics.NetworkLatency = getAverageLatency(sgxResult, sevResult)
+        metrics.PendingTasks = 0
+    }); err != nil {
+        log.Printf("Warning: failed to update metrics: %v", err)
     }
 
     return &compute.ExecutionResult{
@@ -396,9 +442,74 @@ func (vm *ShuttleVM) ExecuteInRegion(
         Output:       sgxResult.Result,
         Attestations: attestations,
         Timestamp:    sgxResult.Timestamp,
-        ID:          selectedPair.ID,  // Using ID instead of PairID
-        RegionID:     regionID,
+        ID:          selectedPair.ID,
+        RegionID:    regionID,
     }, nil
+}
+
+
+// Add helper functions
+
+func isPairHealthy(metrics *regions.TEEPairMetrics) bool {
+    return metrics.SuccessRate >= 0.95 && // 95% success rate
+           metrics.LoadFactor < 0.8 &&    // Under 80% load
+           time.Since(metrics.LastHealthy) < 5*time.Minute
+}
+
+func (vm *ShuttleVM) updateTEEMetrics(ctx context.Context, regionID, pairID, teeType string, execTime time.Duration) {
+    if err := vm.regionManager.UpdateMetrics(ctx, regionID, pairID, func(metrics *regions.TEEPairMetrics) {
+        metrics.PairID = pairID
+        metrics.ExecutionTime = execTime
+        metrics.LastHealthy = time.Now()
+        metrics.SuccessRate = 1.0
+    }); err != nil {
+        log.Printf("Failed to update TEE metrics: %v", err)
+    }
+}
+
+func (vm *ShuttleVM) updateTEEError(ctx context.Context, regionID, pairID, teeType string, err error) {
+    if err := vm.regionManager.UpdateMetrics(ctx, regionID, pairID, func(metrics *regions.TEEPairMetrics) {
+        metrics.PairID = pairID
+        metrics.LastHealthCheck = time.Now()
+        metrics.SuccessRate = 0.0
+        metrics.ExecutionTime = 0
+        metrics.ConsecutiveErrors++
+    }); err != nil {
+        log.Printf("Failed to update TEE error metrics: %v", err)
+    }
+}
+
+func (vm *ShuttleVM) updateVerificationError(ctx context.Context, regionID, pairID string, err error) {
+    if err := vm.regionManager.UpdateMetrics(ctx, regionID, pairID, func(metrics *regions.TEEPairMetrics) {
+        metrics.PairID = pairID
+        metrics.LastHealthCheck = time.Now()
+        metrics.AttestationFailures++
+        metrics.ConsecutiveErrors++
+    }); err != nil {
+        log.Printf("Failed to update verification error metrics: %v", err)
+    }
+}
+
+func calculateLoadFactor(execTime time.Duration) float64 {
+    // Simple load factor calculation based on execution time
+    // You might want to make this more sophisticated
+    return math.Min(float64(execTime.Milliseconds())/1000.0, 1.0)
+}
+
+// Add placeholders for metric extraction
+func getCPUUsage(sgx, sev *proto.ExecutionResult) float64 {
+    // Implement based on your proto definition
+    return 0.0
+}
+
+func getMemoryUsage(sgx, sev *proto.ExecutionResult) float64 {
+    // Implement based on your proto definition
+    return 0.0
+}
+
+func getAverageLatency(sgx, sev *proto.ExecutionResult) float64 {
+    // Implement based on your proto definition
+    return 0.0
 }
 
 
@@ -443,6 +554,16 @@ func mustParseTime(ts string) time.Time {
 }
 
 func (vm *ShuttleVM) Shutdown(ctx context.Context) error {
+    // Cancel monitoring context
+    if vm.monitoringCancel != nil {
+        vm.monitoringCancel()
+    }
+
+    // Stop region monitoring
+    if vm.regionManager != nil {
+        vm.regionManager.StopMonitoring()
+    }
+
     // Close compute node connections
     for region, client := range vm.computeNodes {
         if err := client.Close(); err != nil {
@@ -453,8 +574,79 @@ func (vm *ShuttleVM) Shutdown(ctx context.Context) error {
             )
         }
     }
+
     return nil
 }
+
+// Add health/metrics API endpoints
+func (vm *ShuttleVM) CreateHandlers(ctx context.Context) (map[string]http.Handler, error) {
+    handlers := make(map[string]http.Handler)
+    
+    // Create API RPC server
+    rpcServer := jsonrpc.NewJSONRPCServer(vm)
+    rpcHandler, err := api.NewJSONRPCHandler(consts.Name, rpcServer)
+    if err != nil {
+        return nil, err
+    }
+    
+    handlers["/rpc"] = rpcHandler
+
+    // Add health check endpoint
+    handlers["/health"] = http.HandlerFunc(vm.handleHealthCheck)
+
+    // Add metrics endpoint
+    handlers["/metrics"] = http.HandlerFunc(vm.handleMetrics)
+    
+    return handlers, nil
+}
+
+// Add health check handler
+func (vm *ShuttleVM) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+    regionID := r.URL.Query().Get("region")
+    if regionID == "" {
+        http.Error(w, "region ID required", http.StatusBadRequest)
+        return
+    }
+
+    health, err := vm.regionManager.GetRegionHealth(r.Context(), regionID)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    json.NewEncoder(w).Encode(health)
+}
+
+// Add metrics handler
+func (vm *ShuttleVM) handleMetrics(w http.ResponseWriter, r *http.Request) {
+    regionID := r.URL.Query().Get("region")
+    if regionID == "" {
+        http.Error(w, "region ID required", http.StatusBadRequest)
+        return
+    }
+
+    pairID := r.URL.Query().Get("pair")
+    if pairID == "" {
+        // Return all pairs for region
+        pairs, err := vm.regionManager.GetTEEPairs(regionID)
+        if err != nil {
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+            return
+        }
+        json.NewEncoder(w).Encode(pairs)
+        return
+    }
+
+    // Return specific pair metrics
+    metrics, err := vm.regionManager.GetMetrics(r.Context(), regionID, pairID)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    json.NewEncoder(w).Encode(metrics)
+}
+
 
 // GetComputeClient returns a compute node client for a region
 func (vm *ShuttleVM) GetComputeClient(regionID string) (*compute.NodeClient, error) {

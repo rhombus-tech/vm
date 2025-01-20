@@ -2,11 +2,13 @@
 package vm
 
 import (
-    "context"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/state"
-    "github.com/rhombus-tech/vm/coordination"
-    "github.com/rhombus-tech/vm/core"
+	"context"
+
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/state"
+	"github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/regions"
 )
 
 //go:generate go run github.com/golang/mock/mockgen@v1.6.0 -destination=mocks/mock_state_manager.go -package=mocks -source=$GOFILE
@@ -55,4 +57,8 @@ type VM interface {
     // Regional execution
     ExecuteInRegion(ctx context.Context, regionID string, action chain.Action) error
     ValidateRegionalAction(ctx context.Context, regionID string, action chain.Action) error
+
+    GetRegionHealth(ctx context.Context, regionID string) (*regions.HealthStatus, error)
+    GetRegionMetrics(ctx context.Context, regionID string, pairID string) (*regions.TEEPairMetrics, error)
 }
+

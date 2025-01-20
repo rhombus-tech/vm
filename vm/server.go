@@ -7,28 +7,24 @@ import (
 	"fmt"
 	"net/http"
 
-	// Provided by HyperSDK
 	"github.com/ava-labs/hypersdk/api"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/genesis"
 
-	// Local packages
 	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/regions"
 )
 
 // JSONRPCEndpoint is the path for JSON RPC requests (e.g. /morpheusapi).
 const JSONRPCEndpoint = "/morpheusapi"
 
 // jsonRPCServerFactory implements the HyperSDK API factory pattern.
-//
-// The generic type here is [chain.VM], so AddAPIHandler(...) can accept it.
 type jsonRPCServerFactory struct{}
 
 var _ api.HandlerFactory[chain.VM] = (*jsonRPCServerFactory)(nil)
 
-// New is required by api.HandlerFactory. It should return an api.Handler
-// with a path and the underlying http.Handler.
 func (jsonRPCServerFactory) New(vm chain.VM) (api.Handler, error) {
     handler, err := api.NewJSONRPCHandler(consts.Name, &JSONRPCServer{vm: vm})
     if err != nil {
@@ -40,24 +36,60 @@ func (jsonRPCServerFactory) New(vm chain.VM) (api.Handler, error) {
     }, nil
 }
 
-// JSONRPCServer implements your JSON-RPC methods.
 type JSONRPCServer struct {
     vm chain.VM
 }
 
-// GenesisReply is returned from the Genesis method.
+// Request/Response Types
 type GenesisReply struct {
     Genesis *genesis.DefaultGenesis `json:"genesis,omitempty"`
 }
 
+type BalanceArgs struct {
+    Address codec.Address `json:"address"`
+}
+
+type BalanceReply struct {
+    Amount uint64 `json:"amount"`
+}
+
+type ExecuteArgs struct {
+    RegionID     string `json:"region_id"`  
+    IDTo         string `json:"id_to"`
+    FunctionCall string `json:"function_call"`
+    Parameters   []byte `json:"parameters"`
+}
+
+type ExecuteResult struct {
+    Success    bool   `json:"success"`
+    StateHash  []byte `json:"state_hash"`
+    Output     []byte `json:"output"`
+    Timestamp  string `json:"timestamp"`
+}
+
+type GetRegionHealthRequest struct {
+    RegionID string `json:"region_id"`
+}
+
+type GetRegionHealthResponse struct {
+    Health *regions.HealthStatus `json:"health"`
+}
+
+type GetRegionMetricsRequest struct {
+    RegionID string `json:"region_id"`
+    PairID   string `json:"pair_id"`
+}
+
+type GetRegionMetricsResponse struct {
+    Metrics *regions.TEEPairMetrics `json:"metrics"`
+}
+
 // Genesis is an example JSON-RPC method that tries to retrieve a DefaultGenesis.
 func (j *JSONRPCServer) Genesis(_ *http.Request, _ *struct{}, reply *GenesisReply) error {
-    // Cast chain.VM to something that can provide Genesis (e.g. MyVM).
     vmWithGenesis, ok := j.vm.(interface {
         MyCustomGenesis() (*genesis.DefaultGenesis, error)
     })
     if !ok {
-        // Not implemented; just return nil or an error
         return nil
     }
 
@@ -69,33 +101,16 @@ func (j *JSONRPCServer) Genesis(_ *http.Request, _ *struct{}, reply *GenesisRepl
     return nil
 }
 
-// BalanceArgs for the Balance method.
-type BalanceArgs struct {
-    Address codec.Address `json:"address"`
-}
-
-// BalanceReply for the Balance method.
-type BalanceReply struct {
-    Amount uint64 `json:"amount"`
-}
-
-// Balance is an example JSON-RPC method for retrieving a user’s balance.
+// Balance is a JSON-RPC method for retrieving a user's balance.
 func (j *JSONRPCServer) Balance(req *http.Request, args *BalanceArgs, reply *BalanceReply) error {
-    ctx := req.Context()
-
-    // If your chain.VM implements a method to read balances, cast to it.
     vmWithBalance, ok := j.vm.(interface {
         ReadBalance(context.Context, []byte) (uint64, error)
     })
     if !ok {
-        // If no method is available, you can call your storage package directly,
-        // but you must pass the correct interface or DB reference.
-        // Example, if you want to do storage.GetBalance(ctx, ???, args.Address)
-        // For now, we'll just short-circuit
-        return nil
+        return errors.New("balance reading not supported")
     }
 
-    amount, err := vmWithBalance.ReadBalance(ctx, args.Address[:])
+    amount, err := vmWithBalance.ReadBalance(req.Context(), args.Address[:])
     if err != nil {
         return err
     }
@@ -103,32 +118,12 @@ func (j *JSONRPCServer) Balance(req *http.Request, args *BalanceArgs, reply *Bal
     return nil
 }
 
-// ExecuteArgs for the Execute method
-type ExecuteArgs struct {
-    RegionID     string        `json:"region_id"`  
-    IDTo         string        `json:"id_to"`
-    FunctionCall string        `json:"function_call"`
-    Parameters   []byte        `json:"parameters"`
-}
-
-// ExecuteResult for the Execute method
-type ExecuteResult struct {
-    Success    bool   `json:"success"`
-    StateHash  []byte `json:"state_hash"`
-    Output     []byte `json:"output"`
-    Timestamp  string `json:"timestamp"`
-}
-
-// Add this new method after the existing Balance method
+// Execute handles execution requests
 func (j *JSONRPCServer) Execute(req *http.Request, args *ExecuteArgs, reply *ExecuteResult) error {
-    ctx := req.Context()
-
-    // Validate region exists and operation is authorized
     if args.RegionID == "" {
         return errors.New("region ID required")
     }
 
-    // Cast chain.VM to something that can execute in regions
     vmWithRegions, ok := j.vm.(interface {
         ExecuteInRegion(context.Context, string, string, string, []byte) ([]byte, []byte, string, error)
     })
@@ -136,9 +131,8 @@ func (j *JSONRPCServer) Execute(req *http.Request, args *ExecuteArgs, reply *Exe
         return errors.New("regional execution not supported")
     }
 
-    // Execute the operation
     stateHash, output, timestamp, err := vmWithRegions.ExecuteInRegion(
-        ctx,
+        req.Context(),
         args.RegionID,
         args.IDTo,
         args.FunctionCall,
@@ -148,7 +142,6 @@ func (j *JSONRPCServer) Execute(req *http.Request, args *ExecuteArgs, reply *Exe
         return err
     }
 
-    // Fill the reply
     reply.Success = true
     reply.StateHash = stateHash
     reply.Output = output
@@ -157,23 +150,21 @@ func (j *JSONRPCServer) Execute(req *http.Request, args *ExecuteArgs, reply *Exe
     return nil
 }
 
+// GetObject retrieves object state
 func (j *JSONRPCServer) GetObject(r *http.Request, args *struct {
     ObjectID string `json:"object_id"`
     RegionID string `json:"region_id"`
 }, reply *struct {
-    Object *Object `json:"object"`
+    Object *core.ObjectState `json:"object"`
 }) error {
-    ctx := r.Context()
-    
-    // Cast to your VM implementation that can access state
-    vmImpl, ok := j.vm.(interface {
-        GetObject(context.Context, string, string) (*Object, error)
+    vmWithObjects, ok := j.vm.(interface {
+        GetObject(context.Context, string, string) (*core.ObjectState, error)
     })
     if !ok {
         return fmt.Errorf("VM does not implement GetObject")
     }
 
-    obj, err := vmImpl.GetObject(ctx, args.ObjectID, args.RegionID)
+    obj, err := vmWithObjects.GetObject(r.Context(), args.ObjectID, args.RegionID)
     if err != nil {
         return err
     }
@@ -187,23 +178,54 @@ func (j *JSONRPCServer) GetValidEnclave(r *http.Request, args *struct {
     EnclaveID string `json:"enclave_id"`
     RegionID  string `json:"region_id"`
 }, reply *struct {
-    EnclaveInfo *EnclaveInfo `json:"enclave_info"`
+    EnclaveInfo *core.EnclaveInfo `json:"enclave_info"`
 }) error {
-    ctx := r.Context()
-    
-    // Cast to your VM implementation that can access state
-    vmImpl, ok := j.vm.(interface {
-        GetValidEnclave(context.Context, string, string) (*EnclaveInfo, error)
+    vmWithEnclave, ok := j.vm.(interface {
+        GetValidEnclave(context.Context, string, string) (*core.EnclaveInfo, error)
     })
     if !ok {
         return fmt.Errorf("VM does not implement GetValidEnclave")
     }
 
-    info, err := vmImpl.GetValidEnclave(ctx, args.EnclaveID, args.RegionID)
+    info, err := vmWithEnclave.GetValidEnclave(r.Context(), args.EnclaveID, args.RegionID)
     if err != nil {
         return err
     }
 
     reply.EnclaveInfo = info
+    return nil
+}
+
+// GetRegionHealth retrieves health status for a region
+func (j *JSONRPCServer) GetRegionHealth(r *http.Request, args *GetRegionHealthRequest, reply *GetRegionHealthResponse) error {
+    vmWithRegions, ok := j.vm.(interface {
+        GetRegionHealth(context.Context, string) (*regions.HealthStatus, error)
+    })
+    if !ok {
+        return fmt.Errorf("VM does not implement GetRegionHealth")
+    }
+
+    health, err := vmWithRegions.GetRegionHealth(r.Context(), args.RegionID)
+    if err != nil {
+        return err
+    }
+    reply.Health = health
+    return nil
+}
+
+// GetRegionMetrics retrieves metrics for a region/pair
+func (j *JSONRPCServer) GetRegionMetrics(r *http.Request, args *GetRegionMetricsRequest, reply *GetRegionMetricsResponse) error {
+    vmWithMetrics, ok := j.vm.(interface {
+        GetRegionMetrics(context.Context, string, string) (*regions.TEEPairMetrics, error)
+    })
+    if !ok {
+        return fmt.Errorf("VM does not implement GetRegionMetrics")
+    }
+
+    metrics, err := vmWithMetrics.GetRegionMetrics(r.Context(), args.RegionID, args.PairID)
+    if err != nil {
+        return err
+    }
+    reply.Metrics = metrics
     return nil
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/ava-labs/avalanchego/snow/engine/common"
 	"github.com/ava-labs/avalanchego/utils/wrappers"
 	"github.com/ava-labs/avalanchego/version"
-	"github.com/ava-labs/hypersdk/api"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
@@ -24,8 +23,8 @@ import (
 
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/api/jsonrpc"
-	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/regions"
 	"github.com/rhombus-tech/vm/verifier"
 )
 
@@ -263,19 +262,8 @@ func (vm *ShuttleVM) AppGossip(ctx context.Context, nodeID ids.NodeID, msg []byt
 func (vm *ShuttleVM) Version(context.Context) (string, error) {
     return "0.0.1", nil
 }
-func (vm *ShuttleVM) CreateHandlers(ctx context.Context) (map[string]http.Handler, error) {
-    handlers := make(map[string]http.Handler)
-    
-    // Create API RPC server
-    rpcServer := jsonrpc.NewJSONRPCServer(vm)
-    rpcHandler, err := api.NewJSONRPCHandler(consts.Name, rpcServer)
-    if err != nil {
-        return nil, err
-    }
-    
-    handlers["/rpc"] = rpcHandler
-    return handlers, nil
-}
+
+
 
 // GetObject retrieves object state from a specific region
 func (vm *ShuttleVM) GetObject(ctx context.Context, objectID string, regionID string) (*core.ObjectState, error) {
@@ -376,4 +364,12 @@ func (vm *ShuttleVM) HealthCheck(context.Context) (interface{}, error) {
         "healthy": true,
     }
     return health, nil
+}
+
+func (vm *ShuttleVM) GetRegionHealth(ctx context.Context, regionID string) (*regions.HealthStatus, error) {
+    return vm.regionManager.GetRegionHealth(ctx, regionID)
+}
+
+func (vm *ShuttleVM) GetRegionMetrics(ctx context.Context, regionID string, pairID string) (*regions.TEEPairMetrics, error) {
+    return vm.regionManager.GetMetrics(ctx, regionID, pairID)
 }

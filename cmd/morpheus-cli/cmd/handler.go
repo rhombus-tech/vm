@@ -5,10 +5,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 
-
-	"github.com/rhombus-tech/vm/consts"
-	"github.com/rhombus-tech/vm/vm"
+	hyperjsonrpc "github.com/ava-labs/hypersdk/api/jsonrpc"
 	"github.com/ava-labs/hypersdk/api/ws"
 	"github.com/ava-labs/hypersdk/auth"
 	"github.com/ava-labs/hypersdk/chain"
@@ -17,8 +16,9 @@ import (
 	"github.com/ava-labs/hypersdk/crypto/ed25519"
 	"github.com/ava-labs/hypersdk/pubsub"
 	"github.com/ava-labs/hypersdk/utils" // Add this alias
-    apirpc "github.com/rhombus-tech/vm/api/jsonrpc"  
-	hyperjsonrpc "github.com/ava-labs/hypersdk/api/jsonrpc"
+	apirpc "github.com/rhombus-tech/vm/api/jsonrpc"
+	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/vm"
 )
 
 var _ cli.Controller = (*Controller)(nil)
@@ -127,4 +127,46 @@ func (*Controller) LookupBalance(address codec.Address, uri string) (uint64, err
 	cli := vm.NewJSONRPCClient(uri)
 	balance, err := cli.Balance(context.TODO(), address)
 	return balance, err
+}
+
+func (h *Handler) RegionHealth(regionID string) error {
+    ctx := context.Background()
+    _, _, _, apiClient, _, err := h.DefaultActor()
+    if err != nil {
+        return err
+    }
+    
+    health, err := apiClient.GetRegionHealth(ctx, regionID)
+    if err != nil {
+        return err
+    }
+    
+    utils.Outf("{{green}}Region Health Status:{{/}}\n")
+    s, err := json.MarshalIndent(health, "", "  ")
+    if err != nil {
+        return err
+    }
+    utils.Outf("%s\n", string(s))
+    return nil
+}
+
+func (h *Handler) RegionMetrics(regionID, pairID string) error {
+    ctx := context.Background()
+    _, _, _, apiClient, _, err := h.DefaultActor()
+    if err != nil {
+        return err
+    }
+    
+    metrics, err := apiClient.GetRegionMetrics(ctx, regionID, pairID)
+    if err != nil {
+        return err
+    }
+    
+    utils.Outf("{{green}}Region Metrics:{{/}}\n")
+    s, err := json.MarshalIndent(metrics, "", "  ")
+    if err != nil {
+        return err
+    }
+    utils.Outf("%s\n", string(s))
+    return nil
 }

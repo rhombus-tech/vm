@@ -10,6 +10,7 @@ import (
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/requester"
 	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/regions"
 )
 
 type JSONRPCClient struct {
@@ -219,4 +220,40 @@ func (c *JSONRPCClient) GenerateTransaction(
 ) (uint64, *chain.Transaction, []byte, error) {
     // This would need to be implemented based on your VM's requirements
     return 0, nil, nil, fmt.Errorf("not implemented")
+}
+
+func (c *JSONRPCClient) GetRegionHealth(ctx context.Context, regionID string) (*regions.HealthStatus, error) {
+    resp := new(struct {
+        Health *regions.HealthStatus `json:"health"`
+    })
+    err := c.requester.SendRequest(
+        ctx,
+        "region.health",
+        &struct {
+            RegionID string `json:"region_id"`
+        }{
+            RegionID: regionID,
+        },
+        resp,
+    )
+    return resp.Health, err
+}
+
+func (c *JSONRPCClient) GetRegionMetrics(ctx context.Context, regionID, pairID string) (*regions.TEEPairMetrics, error) {
+    resp := new(struct {
+        Metrics *regions.TEEPairMetrics `json:"metrics"`
+    })
+    err := c.requester.SendRequest(
+        ctx,
+        "region.metrics",
+        &struct {
+            RegionID string `json:"region_id"`
+            PairID   string `json:"pair_id"`
+        }{
+            RegionID: regionID,
+            PairID:   pairID,
+        },
+        resp,
+    )
+    return resp.Metrics, err
 }

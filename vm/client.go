@@ -16,6 +16,7 @@ import (
 	"github.com/ava-labs/hypersdk/requester"
 	"github.com/ava-labs/hypersdk/utils"
 	"github.com/rhombus-tech/vm/consts"
+	"github.com/rhombus-tech/vm/regions"
 	"github.com/rhombus-tech/vm/storage"
 	"github.com/rhombus-tech/vm/tee/proto"
 )
@@ -206,4 +207,41 @@ func (cli *JSONRPCClient) GetRegions(
         resp,
     )
     return resp, err
+}
+
+func (c *JSONRPCClient) GetRegionHealth(ctx context.Context, regionID string) (*regions.HealthStatus, error) {
+    resp := new(struct {
+        Health *regions.HealthStatus `json:"health"`
+    })
+    err := c.requester.SendRequest(
+        ctx,
+        "region.health",
+        &struct {
+            RegionID string `json:"region_id"`
+        }{
+            RegionID: regionID,
+        },
+        resp,
+    )
+    return resp.Health, err
+}
+
+
+func (c *JSONRPCClient) GetRegionMetrics(ctx context.Context, regionID, pairID string) (*regions.TEEPairMetrics, error) {
+    resp := new(struct {
+        Metrics *regions.TEEPairMetrics `json:"metrics"`
+    })
+    err := c.requester.SendRequest(
+        ctx,
+        "region.metrics",
+        &struct {
+            RegionID string `json:"region_id"`
+            PairID   string `json:"pair_id"`
+        }{
+            RegionID: regionID,
+            PairID:   pairID,
+        },
+        resp,
+    )
+    return resp.Metrics, err
 }

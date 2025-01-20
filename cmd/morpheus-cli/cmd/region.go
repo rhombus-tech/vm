@@ -3,13 +3,16 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/utils"
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/vm"
 	"github.com/spf13/cobra"
 )
 
@@ -413,4 +416,60 @@ func getAttestations(_ *cobra.Command, args []string) error {
     }
     
     return nil
+}
+
+var (
+    regionHealthCmd = &cobra.Command{
+        Use:   "health [regionID]",
+        Short: "Get health status for a region",
+        Args:  cobra.ExactArgs(1),
+        RunE: func(cmd *cobra.Command, args []string) error {
+            return handler.RegionHealth(args[0])
+        },
+    }
+
+    regionMetricsCmd = &cobra.Command{
+        Use:   "metrics [regionID] [pairID]",
+        Short: "Get metrics for a region/pair",
+        Args:  cobra.ExactArgs(2),
+        RunE: func(cmd *cobra.Command, args []string) error {
+            return handler.RegionMetrics(args[0], args[1])
+        },
+    }
+)
+
+var flagValues struct {
+    URI string
+    // ... other flag values ...
+}
+
+func init() {
+    // Add URI flag to root command
+    rootCmd.PersistentFlags().StringVar(&flagValues.URI, "uri", "http://localhost:9650", "URI of the node")
+    regionCmd.AddCommand(regionHealthCmd)
+    regionCmd.AddCommand(regionMetricsCmd)
+
+    // ... other flag initialization ...
+}
+
+// Helper function to get client
+func getJSONRPCClient() (*vm.JSONRPCClient, error) {
+    uri := flagValues.URI
+    if uri == "" {
+        return nil, fmt.Errorf("uri is required")
+    }
+    return vm.NewJSONRPCClient(uri), nil
+}
+
+// Helper function to print JSON
+func printJSON(v interface{}) error {
+    encoder := json.NewEncoder(os.Stdout)
+    encoder.SetIndent("", "  ")
+    return encoder.Encode(v)
+}
+
+func init() {
+    // Add commands to root command
+    rootCmd.AddCommand(regionHealthCmd)
+    rootCmd.AddCommand(regionMetricsCmd)
 }

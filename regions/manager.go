@@ -20,19 +20,51 @@ type RegionManager struct {
     metrics      map[string]map[string]*TEEPairMetrics
     cacheLock    sync.RWMutex
     metricsTimer *time.Timer
+    healthChecker *HealthChecker
+    monitor      *PerformanceMonitor
+    done         chan struct{}
 }
 
 // NewRegionManager creates a new region manager instance
 func NewRegionManager(store Storage) *RegionManager {
-    return &RegionManager{
+    rm := &RegionManager{
         configs:  make(map[string]*RegionConfig),
         cache:    make(map[string]*RegionConfig),
         store:    store,
         states:   make(map[string]map[string]*TEEPairState),
         metrics:  make(map[string]map[string]*TEEPairMetrics),
         balancer: NewRegionBalancer(DefaultConfig()),
+        done:     make(chan struct{}),
+    }
+
+    // Initialize health checker with default interval
+    rm.healthChecker = NewHealthChecker(rm, 30*time.Second)
+    
+    // Initialize performance monitor
+    rm.monitor = NewPerformanceMonitor(rm, 1*time.Minute)
+
+    return rm
+}
+
+func (rm *RegionManager) StartMonitoring(ctx context.Context) error {
+    if rm.monitor == nil {
+        rm.monitor = NewPerformanceMonitor(rm, 1*time.Minute)
+    }
+    
+    // Start monitoring
+    rm.monitor.Start(ctx)
+    
+    return nil
+}
+
+
+func (rm *RegionManager) StopMonitoring() {
+    if rm.monitor != nil {
+        rm.monitor.Stop()
     }
 }
+
+
 
 // RegionManager handles region configuration management
 // Storage interface defines methods required for region configuration persistence
@@ -209,6 +241,9 @@ func (rm *RegionManager) GetTEEState(ctx context.Context, regionID string, pairI
 }
 
 
+
+
+
 // GetMetrics gets the current metrics of a TEE pair
 func (rm *RegionManager) GetMetrics(ctx context.Context, regionID string, pairID string) (*TEEPairMetrics, error) {
     rm.cacheLock.RLock()
@@ -227,40 +262,6 @@ func (rm *RegionManager) GetMetrics(ctx context.Context, regionID string, pairID
     return metric, nil
 }
 
-func (rm *RegionManager) StartMetricsCollection(ctx context.Context, interval time.Duration) {
-    rm.metricsTimer = time.NewTimer(interval)
-    
-    go func() {
-        for {
-            select {
-            case <-rm.metricsTimer.C:
-                if err := rm.collectMetrics(ctx); err != nil {
-                    fmt.Printf("metrics collection error: %v\n", err)
-                }
-                rm.metricsTimer.Reset(interval)
-            case <-ctx.Done():
-                rm.metricsTimer.Stop()
-                return
-            }
-        }
-    }()
-}
-
-func (rm *RegionManager) collectMetrics(ctx context.Context) error {
-    rm.cacheLock.RLock()
-    regions := make([]string, 0, len(rm.states))
-    for regionID := range rm.states {
-        regions = append(regions, regionID)
-    }
-    rm.cacheLock.RUnlock()
-
-    for _, regionID := range regions {
-        if err := rm.collectRegionMetrics(ctx, regionID); err != nil {
-            return fmt.Errorf("failed to collect metrics for region %s: %w", regionID, err)
-        }
-    }
-    return nil
-}
 
 func (rm *RegionManager) collectRegionMetrics(ctx context.Context, regionID string) error {
     rm.cacheLock.RLock()
@@ -351,4 +352,35 @@ func (rm *RegionManager) isPairHealthy(state *TEEPairState) bool {
            state.ErrorCount < 3 &&
            state.SuccessRate >= 0.95 &&
            state.LoadFactor < 0.8
+}
+
+func (rm *RegionManager) UpdateRegionHealth(ctx context.Context, regionID string, health *HealthStatus) error {
+    return rm.store.SaveTEEState(ctx, regionID, health.Status, &TEEPairState{
+        Status:        health.Status,
+        LastHealthy:   health.LastCheck,
+        ErrorCount:    health.ErrorCount,
+        SuccessRate:   health.SuccessRate,
+        LoadFactor:    health.LoadFactor,
+        AverageLatency: health.AverageLatency,
+    })
+}
+
+func (rm *RegionManager) GetRegionHealth(ctx context.Context, regionID string) (*HealthStatus, error) {
+    state, err := rm.store.GetTEEState(ctx, regionID, "")
+    if err != nil {
+        return nil, err
+    }
+
+    return &HealthStatus{
+        Status:         state.Status,
+        LastCheck:      state.LastHealthy,
+        ErrorCount:     state.ErrorCount,
+        SuccessRate:    state.SuccessRate,
+        LoadFactor:     state.LoadFactor,
+        AverageLatency: state.AverageLatency,
+    }, nil
+}
+
+func (rm *RegionManager) UpdateRegionMetrics(ctx context.Context, regionID string, metrics *TEEPairMetrics) error {
+    return rm.store.SaveMetrics(ctx, regionID, "", metrics)
 }
