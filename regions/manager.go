@@ -12,13 +12,26 @@ import (
 )
 
 type RegionManager struct {
-    configs    map[string]*RegionConfig
-    cache      map[string]*RegionConfig
-    balancer   *RegionBalancer
-    store      Storage
-    states     map[string]map[string]*TEEPairState
-    metrics    map[string]map[string]*TEEPairMetrics
-    cacheLock  sync.RWMutex  // Changed from mu to cacheLock to match existing code
+    configs      map[string]*RegionConfig
+    cache        map[string]*RegionConfig
+    balancer     *RegionBalancer
+    store        Storage
+    states       map[string]map[string]*TEEPairState
+    metrics      map[string]map[string]*TEEPairMetrics
+    cacheLock    sync.RWMutex
+    metricsTimer *time.Timer
+}
+
+// NewRegionManager creates a new region manager instance
+func NewRegionManager(store Storage) *RegionManager {
+    return &RegionManager{
+        configs:  make(map[string]*RegionConfig),
+        cache:    make(map[string]*RegionConfig),
+        store:    store,
+        states:   make(map[string]map[string]*TEEPairState),
+        metrics:  make(map[string]map[string]*TEEPairMetrics),
+        balancer: NewRegionBalancer(DefaultConfig()),
+    }
 }
 
 // RegionManager handles region configuration management
@@ -177,7 +190,6 @@ func (rm *RegionManager) UpdateMetrics(ctx context.Context, regionID string, pai
 }
 
 
-
 // GetTEEState gets the current state of a TEE pair
 func (rm *RegionManager) GetTEEState(ctx context.Context, regionID string, pairID string) (*TEEPairState, error) {
     rm.cacheLock.RLock()
@@ -214,20 +226,129 @@ func (rm *RegionManager) GetMetrics(ctx context.Context, regionID string, pairID
 
     return metric, nil
 }
-func (rm *RegionManager) UpdateCache(regionID string, config *RegionConfig) {
-    rm.cacheLock.Lock()  // Using cacheLock
-    defer rm.cacheLock.Unlock()
-    rm.cache[regionID] = config
+
+func (rm *RegionManager) StartMetricsCollection(ctx context.Context, interval time.Duration) {
+    rm.metricsTimer = time.NewTimer(interval)
+    
+    go func() {
+        for {
+            select {
+            case <-rm.metricsTimer.C:
+                if err := rm.collectMetrics(ctx); err != nil {
+                    fmt.Printf("metrics collection error: %v\n", err)
+                }
+                rm.metricsTimer.Reset(interval)
+            case <-ctx.Done():
+                rm.metricsTimer.Stop()
+                return
+            }
+        }
+    }()
 }
 
-func (rm *RegionManager) ClearCache() {
-    rm.cacheLock.Lock()  // Using cacheLock
-    defer rm.cacheLock.Unlock()
-    rm.cache = make(map[string]*RegionConfig)
+func (rm *RegionManager) collectMetrics(ctx context.Context) error {
+    rm.cacheLock.RLock()
+    regions := make([]string, 0, len(rm.states))
+    for regionID := range rm.states {
+        regions = append(regions, regionID)
+    }
+    rm.cacheLock.RUnlock()
+
+    for _, regionID := range regions {
+        if err := rm.collectRegionMetrics(ctx, regionID); err != nil {
+            return fmt.Errorf("failed to collect metrics for region %s: %w", regionID, err)
+        }
+    }
+    return nil
 }
 
-func (rm *RegionManager) InvalidateCache(regionID string) {
-    rm.cacheLock.Lock()  // Using cacheLock
-    defer rm.cacheLock.Unlock()
-    delete(rm.cache, regionID)
+func (rm *RegionManager) collectRegionMetrics(ctx context.Context, regionID string) error {
+    rm.cacheLock.RLock()
+    pairs := make(map[string]*TEEPairState)
+    for pairID, state := range rm.states[regionID] {
+        pairs[pairID] = state.Clone()
+    }
+    rm.cacheLock.RUnlock()
+
+    for pairID, state := range pairs {
+        metrics := &TEEPairMetrics{
+            LastHealthCheck: time.Now(),
+            Status:         state.Status,
+            LoadFactor:     state.LoadFactor,
+            SuccessRate:    state.SuccessRate,
+            AverageLatency: state.AverageLatency,
+        }
+
+        if err := rm.UpdateMetrics(ctx, regionID, pairID, func(m *TEEPairMetrics) {
+            *m = *metrics
+        }); err != nil {
+            return fmt.Errorf("failed to update metrics for pair %s: %w", pairID, err)
+        }
+    }
+
+    return nil
+}
+
+func (rm *RegionManager) UpdateHealthStatus(ctx context.Context, regionID, pairID string, healthy bool) error {
+    return rm.UpdateTEEState(ctx, regionID, pairID, func(state *TEEPairState) {
+        if healthy {
+            state.Status = "healthy"
+            state.LastHealthy = time.Now()
+            state.ErrorCount = 0
+        } else {
+            state.Status = "unhealthy"
+            state.ErrorCount++
+        }
+    })
+}
+
+func (rm *RegionManager) MonitorRegionHealth(ctx context.Context, regionID string, interval time.Duration) {
+    go func() {
+        ticker := time.NewTicker(interval)
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ticker.C:
+                if err := rm.checkRegionHealth(ctx, regionID); err != nil {
+                    fmt.Printf("health check error for region %s: %v\n", regionID, err)
+                }
+            case <-ctx.Done():
+                return
+            }
+        }
+    }()
+}
+
+func (rm *RegionManager) checkRegionHealth(ctx context.Context, regionID string) error {
+    config, exists := rm.configs[regionID]
+    if !exists {
+        return fmt.Errorf("region not found: %s", regionID)
+    }
+
+    for _, pair := range config.TEEPairs {
+        state, err := rm.GetTEEState(ctx, regionID, pair.ID)
+        if err != nil {
+            continue
+        }
+
+        healthy := rm.isPairHealthy(state)
+        // Pass context to UpdateHealthStatus
+        if err := rm.UpdateHealthStatus(ctx, regionID, pair.ID, healthy); err != nil {
+            fmt.Printf("failed to update health status for pair %s: %v\n", pair.ID, err)
+        }
+    }
+
+    return nil
+}
+
+func (rm *RegionManager) isPairHealthy(state *TEEPairState) bool {
+    if state == nil {
+        return false
+    }
+
+    return time.Since(state.LastHealthy) < 5*time.Minute &&
+           state.ErrorCount < 3 &&
+           state.SuccessRate >= 0.95 &&
+           state.LoadFactor < 0.8
 }

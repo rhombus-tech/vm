@@ -190,19 +190,6 @@ func (c *TEEPairConfig) GetEffectivePriority(loadFactor float64) int {
 }
 
 
-// NewRegionManager creates a new region manager instance
-func NewRegionManager(store Storage) *RegionManager {
-    return &RegionManager{
-        configs:   make(map[string]*RegionConfig),
-        cache:     make(map[string]*RegionConfig),
-        balancer:  NewRegionBalancer(DefaultConfig()),
-        store:     store,
-        // Initialize new maps
-        states:    make(map[string]map[string]*TEEPairState),
-        metrics:   make(map[string]map[string]*TEEPairMetrics),
-    }
-}
-
 func DefaultConfig() *BalancerConfig {
     return &BalancerConfig{
         MaxLoadFactor:     0.8,
