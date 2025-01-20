@@ -74,18 +74,6 @@ type RegionBalancer struct {
     mu           sync.RWMutex
 }
 
-type TEEPairMetrics struct {
-    PairID          string        `json:"pair_id"`
-    SGXEndpoint     string        `json:"sgx_endpoint"`
-    SEVEndpoint     string        `json:"sev_endpoint"`
-    LoadFactor      float64       `json:"load_factor"`
-    SuccessRate     float64       `json:"success_rate"`
-    ExecutionTime   time.Duration `json:"execution_time"`
-    LastHealthCheck time.Time     `json:"last_health_check"`
-    LastHealthy     time.Time     `json:"last_healthy"`
-}
-
-
 
 func (rb *RegionBalancer) GetHealthyPairs(
     ctx context.Context,

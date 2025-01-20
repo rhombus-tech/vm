@@ -57,12 +57,141 @@ type RegionConfig struct {
 }
 
 type TEEPairConfig struct {
+    // Identity and Endpoints
     ID           string `json:"id"`
     SGXEndpoint  string `json:"sgx_endpoint"`
     SEVEndpoint  string `json:"sev_endpoint"`
-    Capacity     int    `json:"capacity"`
+    
+    // Capacity and Priority
+    Capacity     uint64 `json:"capacity"`      // Changed to uint64 for consistency
     Priority     int    `json:"priority"`
+    
+    // Operational Parameters
+    Thresholds struct {
+        MinSuccessRate float64       `json:"min_success_rate"`
+        MaxErrorRate   float64       `json:"max_error_rate"`
+        MaxLatency     time.Duration `json:"max_latency"`
+        MaxLoadFactor  float64       `json:"max_load_factor"`
+    } `json:"thresholds"`
+    
+    // Health Check Configuration
+    HealthCheck struct {
+        Interval     time.Duration `json:"interval"`
+        MaxFailures  uint64        `json:"max_failures"`
+        MinHealthy   uint64        `json:"min_healthy"`
+    } `json:"health_check"`
+
+    // Resource Limits
+    ResourceLimits struct {
+        MaxCPUUsage    float64 `json:"max_cpu_usage"`    // percentage (0-1)
+        MaxMemoryUsage float64 `json:"max_memory_usage"` // percentage (0-1)
+        MaxTaskQueue   uint64  `json:"max_task_queue"`
+    } `json:"resource_limits"`
+
+    // Attestation Settings
+    Attestation struct {
+        RequireRenewal bool          `json:"require_renewal"`
+        RenewalPeriod  time.Duration `json:"renewal_period"`
+        MaxAge         time.Duration `json:"max_age"`
+    } `json:"attestation"`
 }
+
+func NewTEEPairConfig(id, sgxEndpoint, sevEndpoint string) *TEEPairConfig {
+    config := &TEEPairConfig{
+        ID:          id,
+        SGXEndpoint: sgxEndpoint,
+        SEVEndpoint: sevEndpoint,
+        Capacity:    100,  // Default capacity
+        Priority:    1,    // Default priority
+    }
+
+    // Set default thresholds
+    config.Thresholds.MinSuccessRate = 0.95  // 95%
+    config.Thresholds.MaxErrorRate = 0.05    // 5%
+    config.Thresholds.MaxLatency = 5 * time.Second
+    config.Thresholds.MaxLoadFactor = 0.8    // 80%
+
+    // Set default health check parameters
+    config.HealthCheck.Interval = 30 * time.Second
+    config.HealthCheck.MaxFailures = 3
+    config.HealthCheck.MinHealthy = 1
+
+    // Set default resource limits
+    config.ResourceLimits.MaxCPUUsage = 0.8    // 80%
+    config.ResourceLimits.MaxMemoryUsage = 0.8 // 80%
+    config.ResourceLimits.MaxTaskQueue = 1000
+
+    // Set default attestation settings
+    config.Attestation.RequireRenewal = true
+    config.Attestation.RenewalPeriod = 1 * time.Hour
+    config.Attestation.MaxAge = 24 * time.Hour
+
+    return config
+}
+
+func (c *TEEPairConfig) Validate() error {
+    if c.ID == "" {
+        return fmt.Errorf("ID is required")
+    }
+    if c.SGXEndpoint == "" {
+        return fmt.Errorf("SGX endpoint is required")
+    }
+    if c.SEVEndpoint == "" {
+        return fmt.Errorf("SEV endpoint is required")
+    }
+    if c.Capacity <= 0 {
+        return fmt.Errorf("capacity must be greater than 0")
+    }
+
+    // Validate thresholds
+    if c.Thresholds.MinSuccessRate <= 0 || c.Thresholds.MinSuccessRate > 1 {
+        return fmt.Errorf("invalid min success rate: %v", c.Thresholds.MinSuccessRate)
+    }
+    if c.Thresholds.MaxErrorRate < 0 || c.Thresholds.MaxErrorRate >= 1 {
+        return fmt.Errorf("invalid max error rate: %v", c.Thresholds.MaxErrorRate)
+    }
+    if c.Thresholds.MaxLatency <= 0 {
+        return fmt.Errorf("invalid max latency: %v", c.Thresholds.MaxLatency)
+    }
+
+    // Validate health check settings
+    if c.HealthCheck.Interval <= 0 {
+        return fmt.Errorf("invalid health check interval: %v", c.HealthCheck.Interval)
+    }
+
+    // Validate resource limits
+    if c.ResourceLimits.MaxCPUUsage <= 0 || c.ResourceLimits.MaxCPUUsage > 1 {
+        return fmt.Errorf("invalid max CPU usage: %v", c.ResourceLimits.MaxCPUUsage)
+    }
+    if c.ResourceLimits.MaxMemoryUsage <= 0 || c.ResourceLimits.MaxMemoryUsage > 1 {
+        return fmt.Errorf("invalid max memory usage: %v", c.ResourceLimits.MaxMemoryUsage)
+    }
+
+    // Validate attestation settings
+    if c.Attestation.RequireRenewal {
+        if c.Attestation.RenewalPeriod <= 0 {
+            return fmt.Errorf("invalid renewal period: %v", c.Attestation.RenewalPeriod)
+        }
+        if c.Attestation.MaxAge <= c.Attestation.RenewalPeriod {
+            return fmt.Errorf("max age must be greater than renewal period")
+        }
+    }
+
+    return nil
+}
+
+func (c *TEEPairConfig) IsAtCapacity(currentTasks uint64) bool {
+    return currentTasks >= c.Capacity
+}
+
+func (c *TEEPairConfig) GetEffectivePriority(loadFactor float64) int {
+    // Reduce priority as load increases
+    if loadFactor > c.Thresholds.MaxLoadFactor {
+        return c.Priority - 1
+    }
+    return c.Priority
+}
+
 
 // RegionManager handles region configuration management
 // Storage interface defines methods required for region configuration persistence
