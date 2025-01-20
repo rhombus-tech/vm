@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"sync"
 	"time"
 
 	"github.com/ava-labs/avalanchego/database"
@@ -276,8 +278,10 @@ func (vm *ShuttleVM) ExecuteInRegion(
     regionID string,
     action chain.Action,
 ) (*compute.ExecutionResult, error) {
+    startTime := time.Now() // Define start time explicitly
+
     // Get region config to access TEE pairs
-    region, err := vm.regionManager.GetRegionConfig(regionID)
+    _, err := vm.regionManager.GetRegionConfig(regionID) // Changed to _ since region isn't used
     if err != nil {
         return nil, fmt.Errorf("failed to get region config: %w", err)
     }
@@ -302,7 +306,7 @@ func (vm *ShuttleVM) ExecuteInRegion(
     // Convert chain.Action to ExecutionRequest
     req := &proto.ExecutionRequest{
         RegionId: regionID,
-        PairId:   selectedPair.ID,
+        // Remove PairId as it's not in the proto definition
     }
 
     // Add action-specific fields
@@ -371,18 +375,62 @@ func (vm *ShuttleVM) ExecuteInRegion(
     }
 
     // Update metrics for the pair
-    vm.regionManager.GetBalancer().UpdatePairMetrics(ctx, regionID, selectedPair.ID, &TEEPairMetrics{
-        ExecutionTime: time.Since(start),
-        Success:      true,
-    })
+    metrics := &regions.TEEPairMetrics{
+        PairID:         selectedPair.ID,
+        SGXEndpoint:    selectedPair.SGXEndpoint,
+        SEVEndpoint:    selectedPair.SEVEndpoint,
+        LoadFactor:     0.0, // Calculate based on your requirements
+        SuccessRate:    1.0, // This execution was successful
+        ExecutionTime:  time.Since(startTime),
+        LastHealthCheck: time.Now(),
+        LastHealthy:    time.Now(),
+    }
+
+    if err := vm.regionManager.GetBalancer().UpdatePairMetrics(ctx, regionID, selectedPair.ID, metrics); err != nil {
+        // Log the error but don't fail the execution
+        log.Printf("Failed to update metrics: %v", err)
+    }
 
     return &compute.ExecutionResult{
         StateHash:    sgxResult.StateHash,
-        Result:       sgxResult.Result,
+        Output:       sgxResult.Result,
         Attestations: attestations,
         Timestamp:    sgxResult.Timestamp,
-        PairID:      selectedPair.ID,
+        ID:          selectedPair.ID,  // Using ID instead of PairID
+        RegionID:     regionID,
     }, nil
+}
+
+
+func getActionID(action chain.Action) string {
+    switch a := action.(type) {
+    case *actions.SendEventAction:
+        return a.IDTo
+    case *actions.CreateObjectAction:
+        return a.ID
+    default:
+        return ""
+    }
+}
+
+func getActionFunction(action chain.Action) string {
+    switch a := action.(type) {
+    case *actions.SendEventAction:
+        return a.FunctionCall
+    default:
+        return ""
+    }
+}
+
+func getActionParameters(action chain.Action) []byte {
+    switch a := action.(type) {
+    case *actions.SendEventAction:
+        return a.Parameters
+    case *actions.CreateObjectAction:
+        return a.Code
+    default:
+        return nil
+    }
 }
 
 // Helper function to parse timestamp

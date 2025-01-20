@@ -2,7 +2,6 @@
 package vm
 
 import (
-	"bytes"
     "time"
     "github.com/rhombus-tech/vm/core"
 )
@@ -19,6 +18,13 @@ type Region struct {
     MaxEvents     int                  `json:"max_events"`
 }
 
+type TEEPair struct {
+    ID          string `json:"id"`
+    SGXEndpoint string `json:"sgx_endpoint"`
+    SEVEndpoint string `json:"sev_endpoint"`
+    Status      string `json:"status"`
+}
+
 const (
     RegionStatusActive   = "active"
     RegionStatusInactive = "inactive"
@@ -31,7 +37,7 @@ func (r *Region) Validate() error {
         return ErrInvalidRegionID
     }
     
-    if len(r.TEEs) == 0 {
+    if len(r.TEEPairs) == 0 {
         return ErrInvalidTEE
     }
     
@@ -53,16 +59,17 @@ func (r *Region) IsActive() bool {
 
 // CanExecute checks if the region can execute new tasks
 func (r *Region) CanExecute() bool {
-    return r.IsActive() && len(r.TEEs) >= 2
+    return r.IsActive() && len(r.TEEPairs) >= 1
 }
 
+
 // GetTEEPair returns the primary TEE pair for execution
-func (r *Region) GetTEEPair() ([2]core.TEEAddress, error) {
-    if len(r.TEEs) < 2 {
-        return [2]core.TEEAddress{}, ErrInvalidTEE
+func (r *Region) GetTEEPair() (*TEEPair, error) {
+    if len(r.TEEPairs) == 0 {
+        return nil, ErrInvalidTEE
     }
     
-    return [2]core.TEEAddress{r.TEEs[0], r.TEEs[1]}, nil
+    return &r.TEEPairs[0], nil
 }
 
 // UpdateStatus updates the region status and last updated timestamp
@@ -71,24 +78,26 @@ func (r *Region) UpdateStatus(status string) {
     r.LastUpdated = time.Now().UTC()
 }
 
-// AddTEE adds a new TEE to the region if not already present
-func (r *Region) AddTEE(tee core.TEEAddress) {
-    // Check if TEE already exists
-    for _, existing := range r.TEEs {
-        if bytes.Equal(existing, tee) {
+// AddTEEPair adds a new TEE pair to the region if not already present
+func (r *Region) AddTEEPair(pair TEEPair) {
+    // Check if pair already exists
+    for _, existing := range r.TEEPairs {
+        if existing.SGXEndpoint == pair.SGXEndpoint && 
+           existing.SEVEndpoint == pair.SEVEndpoint {
             return
         }
     }
-    r.TEEs = append(r.TEEs, tee)
+    r.TEEPairs = append(r.TEEPairs, pair)
 }
 
-// RemoveTEE removes a TEE from the region
-func (r *Region) RemoveTEE(tee core.TEEAddress) {
-    newTEEs := make([]core.TEEAddress, 0, len(r.TEEs))
-    for _, existing := range r.TEEs {
-        if !bytes.Equal(existing, tee) {
-            newTEEs = append(newTEEs, existing)
+// RemoveTEEPair removes a TEE pair from the region
+func (r *Region) RemoveTEEPair(pair TEEPair) {
+    newPairs := make([]TEEPair, 0, len(r.TEEPairs))
+    for _, existing := range r.TEEPairs {
+        if existing.SGXEndpoint != pair.SGXEndpoint || 
+           existing.SEVEndpoint != pair.SEVEndpoint {
+            newPairs = append(newPairs, existing)
         }
     }
-    r.TEEs = newTEEs
+    r.TEEPairs = newPairs
 }

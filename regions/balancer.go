@@ -1,12 +1,14 @@
 package regions
 
 import (
-    "context"
-    "errors"
-    "sync"
-    "time"
-    
-    "github.com/rhombus-tech/vm/core"
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"sync"
+	"time"
+
+	"github.com/rhombus-tech/vm/core"
 )
 
 var (
@@ -52,33 +54,37 @@ type TEEMetrics struct {
 }
 
 type BalancerConfig struct {
-    MaxLoadFactor     float64
-    MaxLatencyMs      float64
-    MaxErrorRate      float64
-    MinActiveWorkers  int
-    MaxPendingTasks   int
-    HealthCheckWindow time.Duration
-    // Add new fields
-    GeoPreference     bool    // Whether to prefer geographically closer regions
-    MaxDistance       float64 // Maximum acceptable distance in km
+    MaxLoadFactor     float64          // Maximum load factor (0.0-1.0)
+    MaxLatencyMs      float64          // Maximum latency in milliseconds
+    MaxErrorRate      float64          // Maximum error rate threshold
+    MinSuccessRate    float64          // Minimum success rate required (0.0-1.0)
+    MinActiveWorkers  int              // Minimum number of active workers
+    MaxPendingTasks   int              // Maximum number of pending tasks
+    HealthCheckWindow time.Duration    // Health check window duration
+    GeoPreference     bool             // Whether to prefer geographically closer regions
+    MaxDistance       float64          // Maximum acceptable distance in km
 }
 
 type RegionBalancer struct {
-    regions    map[string]*Region
-    metrics    map[string]*RegionMetrics
-    thresholds *BalancerConfig
-    mu         sync.RWMutex
-    pairMetrics map[string][]TEEPairMetrics
+    regions      map[string]*Region
+    metrics      map[string]*RegionMetrics
+    pairMetrics  map[string][]TEEPairMetrics
+    thresholds   *BalancerConfig
+    mu           sync.RWMutex
 }
 
 type TEEPairMetrics struct {
-    PairID        string
-    LoadFactor    float64
-    SuccessRate   float64
-    LatencyMs     float64
-    TasksHandled  uint64
-    LastHealthy   time.Time
+    PairID          string        `json:"pair_id"`
+    SGXEndpoint     string        `json:"sgx_endpoint"`
+    SEVEndpoint     string        `json:"sev_endpoint"`
+    LoadFactor      float64       `json:"load_factor"`
+    SuccessRate     float64       `json:"success_rate"`
+    ExecutionTime   time.Duration `json:"execution_time"`
+    LastHealthCheck time.Time     `json:"last_health_check"`
+    LastHealthy     time.Time     `json:"last_healthy"`
 }
+
+
 
 func (rb *RegionBalancer) GetHealthyPairs(
     ctx context.Context,
@@ -105,6 +111,7 @@ func NewRegionBalancer(config *BalancerConfig) *RegionBalancer {
             MaxLoadFactor:     0.8,
             MaxLatencyMs:      1000,
             MaxErrorRate:      0.1,
+            MinSuccessRate:    0.95,  // Add this default
             MinActiveWorkers:  2,
             MaxPendingTasks:   1000,
             HealthCheckWindow: 5 * time.Minute,
@@ -115,9 +122,10 @@ func NewRegionBalancer(config *BalancerConfig) *RegionBalancer {
     }
 
     return &RegionBalancer{
-        regions:    make(map[string]*Region),
-        metrics:    make(map[string]*RegionMetrics),
-        thresholds: config,
+        regions:     make(map[string]*Region),
+        metrics:     make(map[string]*RegionMetrics),
+        pairMetrics: make(map[string][]TEEPairMetrics), // Add this field
+        thresholds:  config,
     }
 }
 
@@ -296,3 +304,63 @@ func (b *RegionBalancer) GetAllRegionMetrics() map[string]*RegionMetrics {
 	}
 	return metrics
 }
+
+func (rb *RegionBalancer) SelectOptimalPair(ctx context.Context, regionID string) (*TEEPair, error) {
+    rb.mu.RLock()
+    defer rb.mu.RUnlock()
+
+    pairs := rb.pairMetrics[regionID]
+    if len(pairs) == 0 {
+        return nil, fmt.Errorf("no TEE pairs available for region %s", regionID)
+    }
+
+    var selectedPair *TEEPair
+    var minLoad float64 = math.MaxFloat64
+
+    for _, metrics := range pairs {
+        if metrics.LoadFactor < minLoad &&
+           metrics.SuccessRate > rb.thresholds.MinSuccessRate &&
+           time.Since(metrics.LastHealthy) < rb.thresholds.HealthCheckWindow {
+            minLoad = metrics.LoadFactor
+            selectedPair = &TEEPair{
+                ID:          metrics.PairID,
+                SGXEndpoint: metrics.SGXEndpoint,
+                SEVEndpoint: metrics.SEVEndpoint,
+                Status:      "active",
+            }
+        }
+    }
+
+    if selectedPair == nil {
+        return nil, fmt.Errorf("no healthy TEE pairs available for region %s", regionID)
+    }
+
+    return selectedPair, nil
+}
+
+func (rb *RegionBalancer) UpdatePairMetrics(ctx context.Context, regionID string, pairID string, metrics *TEEPairMetrics) error {
+    rb.mu.Lock()
+    defer rb.mu.Unlock()
+
+    if rb.pairMetrics[regionID] == nil {
+        rb.pairMetrics[regionID] = make([]TEEPairMetrics, 0)
+    }
+
+    // Update existing metrics or add new ones
+    found := false
+    for i := range rb.pairMetrics[regionID] {
+        if rb.pairMetrics[regionID][i].PairID == pairID {
+            rb.pairMetrics[regionID][i] = *metrics
+            found = true
+            break
+        }
+    }
+
+    if !found {
+        rb.pairMetrics[regionID] = append(rb.pairMetrics[regionID], *metrics)
+    }
+
+    return nil
+}
+
+

@@ -17,11 +17,12 @@ type ExecutionRequest struct {
 
 
 type ExecutionResult struct {
-    StateHash    []byte                 `json:"state_hash"`    // Add JSON tags
-    Result       []byte                 `json:"result"`
+    StateHash    []byte                 `json:"state_hash"`
+    Output       []byte                 `json:"output"`
     Attestations [2]core.TEEAttestation `json:"attestations"`
     Timestamp    string                 `json:"timestamp"`
-    RegionID     string                 `json:"region_id"`     // Add region tracking
+    ID           string                 `json:"id"`      // Changed from PairID to ID
+    RegionID     string                 `json:"region_id"`
 }
 
 type TEEAttestation struct {

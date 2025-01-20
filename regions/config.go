@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/ava-labs/avalanchego/x/merkledb"
 )
@@ -34,11 +36,15 @@ type LoadBalancerConfig struct {
     MaxDistance       float64 // Maximum acceptable distance in km
 }
 
-// TEEPair represents a pair of TEE IDs (SGX + SEV)
 type TEEPair struct {
-	SGXID []byte // SGX enclave ID
-	SEVID []byte // SEV enclave ID
+    ID          string `json:"id"`
+    SGXID       []byte `json:"sgx_id"`
+    SEVID       []byte `json:"sev_id"`
+    SGXEndpoint string `json:"sgx_endpoint"`
+    SEVEndpoint string `json:"sev_endpoint"`
+    Status      string `json:"status"`
 }
+
 
 // RegionConfig defines the configuration for a region
 type RegionConfig struct {
@@ -74,17 +80,37 @@ type Storage interface {
 }
 
 type RegionManager struct {
-	configs map[string]*RegionConfig
-	store   Storage
+    configs    map[string]*RegionConfig
+    cache     map[string]*RegionConfig
+    cacheLock sync.RWMutex
+    balancer  *RegionBalancer
+    store     Storage
 }
 
 // NewRegionManager creates a new region manager instance
 func NewRegionManager(store Storage) *RegionManager {
-	return &RegionManager{
-		configs: make(map[string]*RegionConfig),
-		store:   store,
-	}
+    return &RegionManager{
+        configs:   make(map[string]*RegionConfig),
+        cache:     make(map[string]*RegionConfig),
+        balancer:  NewRegionBalancer(DefaultConfig()), // Add this function if not exists
+        store:     store,
+    }
 }
+
+func DefaultConfig() *BalancerConfig {
+    return &BalancerConfig{
+        MaxLoadFactor:     0.8,
+        MaxLatencyMs:      1000,
+        MaxErrorRate:      0.1,
+        MinSuccessRate:    0.95,
+        MinActiveWorkers:  2,
+        MaxPendingTasks:   1000,
+        HealthCheckWindow: 5 * time.Minute,
+        GeoPreference:     true,
+        MaxDistance:       5000, // 5000km
+    }
+}
+
 
 // Validate checks if a region configuration is valid
 func (c *RegionConfig) Validate() error {
@@ -278,4 +304,56 @@ func (m *RegionManager) ListRegions() []string {
 		regions = append(regions, regionID)
 	}
 	return regions
+}
+
+
+func (rm *RegionManager) GetRegionConfig(regionID string) (*RegionConfig, error) {
+    rm.cacheLock.RLock()
+    config, exists := rm.cache[regionID]
+    rm.cacheLock.RUnlock()
+    
+    if exists {
+        return config, nil
+    }
+
+    // If not in cache, try to load from store
+    rm.cacheLock.Lock()
+    defer rm.cacheLock.Unlock()
+
+    // Double check after acquiring write lock
+    if config, exists = rm.cache[regionID]; exists {
+        return config, nil
+    }
+
+    // Load from store
+    config, err := rm.store.GetRegionConfig(regionID)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get region config: %w", err)
+    }
+
+    // Cache the config
+    rm.cache[regionID] = config
+    return config, nil
+}
+
+func (rm *RegionManager) GetBalancer() *RegionBalancer {
+    return rm.balancer
+}
+
+func (rm *RegionManager) UpdateCache(regionID string, config *RegionConfig) {
+    rm.cacheLock.Lock()
+    defer rm.cacheLock.Unlock()
+    rm.cache[regionID] = config
+}
+
+func (rm *RegionManager) ClearCache() {
+    rm.cacheLock.Lock()
+    defer rm.cacheLock.Unlock()
+    rm.cache = make(map[string]*RegionConfig)
+}
+
+func (rm *RegionManager) InvalidateCache(regionID string) {
+    rm.cacheLock.Lock()
+    defer rm.cacheLock.Unlock()
+    delete(rm.cache, regionID)
 }

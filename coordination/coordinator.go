@@ -118,8 +118,20 @@ func (c *Coordinator) RegisterRegion(ctx context.Context, regionID string, teeWo
         }
     }
 
+    // Create TEEPairInfo
+    pair := TEEPairInfo{
+        ID:        fmt.Sprintf("pair-%s", regionID),
+        SGXWorker: teeWorkers[0],
+        SEVWorker: teeWorkers[1],
+        Channel:   nil, // Will be established later
+        LastUsed:  time.Now(),
+    }
+
     // Store TEE pair for region
-    c.teePairs[regionID] = teeWorkers
+    if c.teePairs[regionID] == nil {
+        c.teePairs[regionID] = make([]TEEPairInfo, 0)
+    }
+    c.teePairs[regionID] = append(c.teePairs[regionID], pair)
 
     // Create region record in storage
     region := &Region{
@@ -135,18 +147,24 @@ func (c *Coordinator) ValidateRegionalOperation(ctx context.Context, regionID st
     c.regionLock.RLock()
     defer c.regionLock.RUnlock()
 
-    // Get registered TEE pair for region
-    teePair, exists := c.teePairs[regionID]
-    if !exists {
+    // Get registered TEE pairs for region
+    pairs, exists := c.teePairs[regionID]
+    if !exists || len(pairs) == 0 {
         return ErrRegionNotFound
     }
 
-    // Verify attestations come from registered TEEs
-    for i, att := range attestations {
-        workerID := WorkerID(att.EnclaveID) // Convert enclave ID to worker ID
-        if workerID != teePair[i] {
-            return fmt.Errorf("unauthorized TEE for region: %s", workerID)
+    // Find matching pair
+    var foundPair *TEEPairInfo
+    for i := range pairs {
+        if WorkerID(attestations[0].EnclaveID) == pairs[i].SGXWorker &&
+           WorkerID(attestations[1].EnclaveID) == pairs[i].SEVWorker {
+            foundPair = &pairs[i]
+            break
         }
+    }
+
+    if foundPair == nil {
+        return fmt.Errorf("unauthorized TEE pair for region")
     }
 
     // Verify timestamps match
@@ -179,15 +197,14 @@ func NewCoordinator(config *Config, db merkledb.MerkleDB) (*Coordinator, error) 
         config:     config,
         workers:    make(map[WorkerID]*Worker),
         db:         db,
-        tasks:      make(chan *Task, config.MaxTasks),  // Use MaxTasks here
+        tasks:      make(chan *Task, config.MaxTasks),
         taskStatus: make(map[string]*TaskInfo),
         done:       make(chan struct{}),
         ctx:        ctx,
         cancel:     cancel,
-        teePairs:   make(map[string][2]WorkerID),
+        teePairs:   make(map[string][]TEEPairInfo),
     }, nil
 }
-
 
 
 func (c *Coordinator) Start() error {
@@ -397,15 +414,20 @@ func (c *Coordinator) handleRegionalTask(ctx context.Context, task *Task, region
     teePair, exists := c.teePairs[regionID]
     c.regionLock.RUnlock()
     
-    if !exists {
+    if !exists || len(teePair) == 0 {
         return ErrRegionNotFound
     }
 
+    // Access the SGX and SEV worker IDs from the first pair
     // Set task workers to region's TEE pair
-    task.WorkerIDs = []WorkerID{teePair[0], teePair[1]}
+    task.WorkerIDs = []WorkerID{
+        teePair[0].SGXWorker, // Access the SGXWorker field
+        teePair[0].SEVWorker, // Access the SEVWorker field
+    }
 
     return c.handleTask(ctx, task)
 }
+
 
 func (c *Coordinator) cleanupTasks() {
     // Use a default interval if not set
@@ -449,6 +471,27 @@ func (c *Coordinator) GetWorker(id WorkerID) (*Worker, bool) {
     return worker, exists
 }
 
+func (c *Coordinator) GetWorkerPair(regionID string) ([]WorkerID, error) {
+    c.regionLock.RLock()
+    defer c.regionLock.RUnlock()
+    
+    pairs, exists := c.teePairs[regionID]
+    if !exists || len(pairs) == 0 {
+        return nil, ErrRegionNotFound
+    }
+    
+    // Return the worker IDs from the first pair
+    return []WorkerID{
+        pairs[0].SGXWorker,
+        pairs[0].SEVWorker,
+    }, nil
+}
+
+// Helper method to get worker IDs from a TEEPairInfo
+func getWorkerIDsFromPair(pair TEEPairInfo) [2]WorkerID {
+    return [2]WorkerID{pair.SGXWorker, pair.SEVWorker}
+}
+
 // GetWorkerIDs returns all registered worker IDs
 func (c *Coordinator) GetWorkerIDs() []WorkerID {
     c.mu.RLock()
@@ -472,12 +515,13 @@ func (c *Coordinator) GetTEEPair(regionID string) ([2]WorkerID, error) {
     c.regionLock.RLock()
     defer c.regionLock.RUnlock()
     
-    teePair, exists := c.teePairs[regionID]
-    if !exists {
+    pairs, exists := c.teePairs[regionID]
+    if !exists || len(pairs) == 0 {
         return [2]WorkerID{}, ErrRegionNotFound
     }
     
-    return teePair, nil
+    // Return first pair's workers
+    return [2]WorkerID{pairs[0].SGXWorker, pairs[0].SEVWorker}, nil
 }
 
 func (c *Coordinator) GetSecureChannel(ctx context.Context, worker1, worker2 WorkerID) (*SecureChannel, error) {
