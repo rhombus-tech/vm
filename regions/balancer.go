@@ -68,7 +68,36 @@ type RegionBalancer struct {
     metrics    map[string]*RegionMetrics
     thresholds *BalancerConfig
     mu         sync.RWMutex
+    pairMetrics map[string][]TEEPairMetrics
 }
+
+type TEEPairMetrics struct {
+    PairID        string
+    LoadFactor    float64
+    SuccessRate   float64
+    LatencyMs     float64
+    TasksHandled  uint64
+    LastHealthy   time.Time
+}
+
+func (rb *RegionBalancer) GetHealthyPairs(
+    ctx context.Context,
+    regionID string,
+) []string {
+    rb.mu.RLock()
+    defer rb.mu.RUnlock()
+
+    healthy := make([]string, 0)
+    for _, metrics := range rb.pairMetrics[regionID] {
+        if time.Since(metrics.LastHealthy) < rb.thresholds.HealthCheckWindow &&
+           metrics.LoadFactor < rb.thresholds.MaxLoadFactor &&
+           metrics.SuccessRate > rb.thresholds.MinSuccessRate {
+            healthy = append(healthy, metrics.PairID)
+        }
+    }
+    return healthy
+}
+
 
 func NewRegionBalancer(config *BalancerConfig) *RegionBalancer {
     if config == nil {

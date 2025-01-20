@@ -276,47 +276,122 @@ func (vm *ShuttleVM) ExecuteInRegion(
     regionID string,
     action chain.Action,
 ) (*compute.ExecutionResult, error) {
-    client, exists := vm.computeNodes[regionID]
+    // Get region config to access TEE pairs
+    region, err := vm.regionManager.GetRegionConfig(regionID)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get region config: %w", err)
+    }
+
+    // Select optimal TEE pair using load balancer
+    selectedPair, err := vm.regionManager.GetBalancer().SelectOptimalPair(ctx, regionID)
+    if err != nil {
+        return nil, fmt.Errorf("failed to select TEE pair: %w", err)
+    }
+
+    // Get compute clients for selected pair
+    sgxClient, exists := vm.computeNodes[selectedPair.SGXEndpoint]
     if !exists {
-        return nil, fmt.Errorf("no compute node available for region %s", regionID)
+        return nil, fmt.Errorf("SGX compute node not found for pair %s", selectedPair.ID)
+    }
+
+    sevClient, exists := vm.computeNodes[selectedPair.SEVEndpoint]
+    if !exists {
+        return nil, fmt.Errorf("SEV compute node not found for pair %s", selectedPair.ID)
     }
 
     // Convert chain.Action to ExecutionRequest
     req := &proto.ExecutionRequest{
         RegionId: regionID,
-        // Add appropriate field mappings based on your action type
-        // You may need to type assert the action to get specific fields
+        PairId:   selectedPair.ID,
     }
 
-    // Execute on compute node
-    result, err := client.Execute(ctx, req)
-    if err != nil {
-        return nil, err
+    // Add action-specific fields
+    switch a := action.(type) {
+    case *actions.SendEventAction:
+        req.IdTo = a.IDTo
+        req.FunctionCall = a.FunctionCall
+        req.Parameters = a.Parameters
+    case *actions.CreateObjectAction:
+        req.IdTo = a.ID
+        req.Parameters = a.Code
+    default:
+        return nil, fmt.Errorf("unsupported action type: %T", action)
     }
 
-    // Convert pb.TEEAttestation array to [2]core.TEEAttestation
-    var attestations [2]core.TEEAttestation
-    if len(result.Attestations) >= 2 {
-        for i := 0; i < 2; i++ {
-            attestations[i] = core.TEEAttestation{
-                EnclaveID:   result.Attestations[i].EnclaveId,
-                Measurement: result.Attestations[i].Measurement,
-                // Add other field conversions
-            }
-        }
+    // Execute on both TEEs in parallel
+    var wg sync.WaitGroup
+    var sgxResult, sevResult *proto.ExecutionResult
+    var sgxErr, sevErr error
+
+    wg.Add(2)
+    go func() {
+        defer wg.Done()
+        sgxResult, sgxErr = sgxClient.Execute(ctx, req)
+    }()
+    go func() {
+        defer wg.Done()
+        sevResult, sevErr = sevClient.Execute(ctx, req)
+    }()
+    wg.Wait()
+
+    // Check for errors
+    if sgxErr != nil {
+        return nil, fmt.Errorf("SGX execution failed: %w", sgxErr)
+    }
+    if sevErr != nil {
+        return nil, fmt.Errorf("SEV execution failed: %w", sevErr)
     }
 
-    // Verify the attestations
+    // Convert attestations
+    attestations := [2]core.TEEAttestation{
+        {
+            EnclaveID:   sgxResult.Attestations[0].EnclaveId,
+            Measurement: sgxResult.Attestations[0].Measurement,
+            Timestamp:   mustParseTime(sgxResult.Attestations[0].Timestamp),
+            Data:        sgxResult.Attestations[0].Data,
+            RegionProof: sgxResult.Attestations[0].RegionProof,
+        },
+        {
+            EnclaveID:   sevResult.Attestations[0].EnclaveId,
+            Measurement: sevResult.Attestations[0].Measurement,
+            Timestamp:   mustParseTime(sevResult.Attestations[0].Timestamp),
+            Data:        sevResult.Attestations[0].Data,
+            RegionProof: sevResult.Attestations[0].RegionProof,
+        },
+    }
+
+    // Verify attestations
     if err := vm.verifier.VerifyAttestationPair(ctx, attestations, nil); err != nil {
         return nil, fmt.Errorf("attestation verification failed: %w", err)
     }
 
+    // Verify results match
+    if !bytes.Equal(sgxResult.StateHash, sevResult.StateHash) {
+        return nil, fmt.Errorf("state hash mismatch between SGX and SEV")
+    }
+
+    // Update metrics for the pair
+    vm.regionManager.GetBalancer().UpdatePairMetrics(ctx, regionID, selectedPair.ID, &TEEPairMetrics{
+        ExecutionTime: time.Since(start),
+        Success:      true,
+    })
+
     return &compute.ExecutionResult{
-        StateHash:    result.StateHash,
-        Result:       result.Result,
+        StateHash:    sgxResult.StateHash,
+        Result:       sgxResult.Result,
         Attestations: attestations,
-        Timestamp:    result.Timestamp,
+        Timestamp:    sgxResult.Timestamp,
+        PairID:      selectedPair.ID,
     }, nil
+}
+
+// Helper function to parse timestamp
+func mustParseTime(ts string) time.Time {
+    t, err := time.Parse(time.RFC3339, ts)
+    if err != nil {
+        panic(fmt.Sprintf("invalid timestamp format: %v", err))
+    }
+    return t
 }
 
 func (vm *ShuttleVM) Shutdown(ctx context.Context) error {

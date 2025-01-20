@@ -10,7 +10,7 @@ import (
 // Region represents a TEE execution region
 type Region struct {
     ID            string                `json:"id"`
-    TEEs          []core.TEEAddress    `json:"tees"`
+    TEEPairs      []TEEPair            `json:"tee_pairs"`
     Status        string               `json:"status"`
     CreatedAt     time.Time           `json:"created_at"`
     LastUpdated   time.Time           `json:"last_updated"`

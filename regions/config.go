@@ -50,6 +50,14 @@ type RegionConfig struct {
 	Location     GeoLocation		// Region location
 }
 
+type TEEPairConfig struct {
+    ID           string `json:"id"`
+    SGXEndpoint  string `json:"sgx_endpoint"`
+    SEVEndpoint  string `json:"sev_endpoint"`
+    Capacity     int    `json:"capacity"`
+    Priority     int    `json:"priority"`
+}
+
 // RegionManager handles region configuration management
 // Storage interface defines methods required for region configuration persistence
 type Storage interface {

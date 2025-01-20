@@ -4,7 +4,9 @@ package coordination
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ava-labs/avalanchego/x/merkledb"
@@ -36,9 +38,19 @@ type Coordinator struct {
     ctx        context.Context
     cancel     context.CancelFunc
 
-    teePairs    map[string][2]WorkerID
+    teePairs    map[string][]TEEPairInfo
     regionLock  sync.RWMutex
 }
+
+type TEEPairInfo struct {
+    ID          string
+    SGXWorker   WorkerID
+    SEVWorker   WorkerID
+    Channel     *SecureChannel
+    TaskCount   int32
+    LastUsed    time.Time
+}
+
 
 type Region struct {
     ID         string     `json:"id"`
@@ -62,6 +74,37 @@ type TaskInfo struct {
     EndTime   time.Time
     Error     error
     Results   [][]byte
+}
+
+func (c *Coordinator) selectTEEPair(ctx context.Context, regionID string) (*TEEPairInfo, error) {
+    c.mu.RLock()
+    pairs := c.teePairs[regionID]
+    c.mu.RUnlock()
+
+    if len(pairs) == 0 {
+        return nil, fmt.Errorf("no TEE pairs available for region %s", regionID)
+    }
+
+    // Select pair based on load and health
+    var selectedPair *TEEPairInfo
+    minTasks := int32(math.MaxInt32)
+
+    for i := range pairs {
+        pair := &pairs[i]
+        taskCount := atomic.LoadInt32(&pair.TaskCount)
+        
+        if taskCount < minTasks {
+            minTasks = taskCount
+            selectedPair = pair
+        }
+    }
+
+    if selectedPair == nil {
+        return nil, fmt.Errorf("no available TEE pairs in region %s", regionID)
+    }
+
+    atomic.AddInt32(&selectedPair.TaskCount, 1)
+    return selectedPair, nil
 }
 
 func (c *Coordinator) RegisterRegion(ctx context.Context, regionID string, teeWorkers [2]WorkerID) error {
