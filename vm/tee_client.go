@@ -4,11 +4,13 @@
 package vm
 
 import (
-    "context"
-    "fmt"
+	"context"
+	"fmt"
 
-    "google.golang.org/grpc"
-    "github.com/rhombus-tech/vm/tee/proto"
+	"github.com/rhombus-tech/vm/compute"
+	"github.com/rhombus-tech/vm/tee/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 )
 
 // TEEType redeclared as uint8 to match existing constants
@@ -51,11 +53,58 @@ func (c *TEEClient) GetType() TEEType {
 }
 
 // Execute executes code in the TEE
-func (c *TEEClient) Execute(req *proto.ExecutionRequest) (*proto.ExecutionResult, error) {
-    ctx := context.Background()
+func (c *TEEClient) Execute(ctx context.Context, req *proto.ExecutionRequest) (*proto.ExecutionResult, error) {
     resp, err := c.client.Execute(ctx, req)
     if err != nil {
         return nil, fmt.Errorf("TEE execution failed: %w", err)
     }
     return resp, nil
+}
+
+func (vm *ShuttleVM) InitializeTEEPairs(ctx context.Context) error {
+    regions := vm.regionManager.ListRegions()
+
+    for _, regionID := range regions {
+        pairs, err := vm.regionManager.GetTEEPairs(regionID)
+        if err != nil {
+            return err
+        }
+
+        for _, pair := range pairs {
+            // Create SGX client
+            sgxConfig := compute.NodeClientConfig{
+                Endpoint:       pair.SGXEndpoint,
+                ControllerPath: vm.config.ControllerPath,
+                WasmPath:      vm.config.WasmPath,
+            }
+            sgxClient, err := compute.NewNodeClient(sgxConfig)
+            if err != nil {
+                return fmt.Errorf("failed to create SGX client: %w", err)
+            }
+
+            // Create SEV client
+            sevConfig := compute.NodeClientConfig{
+                Endpoint:       pair.SEVEndpoint,
+                ControllerPath: vm.config.ControllerPath,
+                WasmPath:      vm.config.WasmPath,
+            }
+            sevClient, err := compute.NewNodeClient(sevConfig)
+            if err != nil {
+                sgxClient.Close()
+                return fmt.Errorf("failed to create SEV client: %w", err)
+            }
+
+            vm.computeNodes[pair.SGXEndpoint] = sgxClient
+            vm.computeNodes[pair.SEVEndpoint] = sevClient
+        }
+    }
+    return nil
+}
+
+// Implement necessary interface methods
+func (c *TEEClient) ValidateConnection(ctx context.Context) error {
+    if c.conn.GetState() != connectivity.Ready {
+        return fmt.Errorf("connection not ready: %s", c.conn.GetState())
+    }
+    return nil
 }

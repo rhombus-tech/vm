@@ -297,13 +297,29 @@ func (m *RegionManager) ValidateTEEPair(regionID string, sgxID, sevID []byte) er
 	return err
 }
 
-// ListRegions returns a list of all configured region IDs
-func (m *RegionManager) ListRegions() []string {
-	regions := make([]string, 0, len(m.configs))
-	for regionID := range m.configs {
-		regions = append(regions, regionID)
-	}
-	return regions
+func (rm *RegionManager) AddTEEPair(regionID string, pair *TEEPair) error {
+    rm.cacheLock.Lock()
+    defer rm.cacheLock.Unlock()
+
+    config, exists := rm.cache[regionID]
+    if !exists {
+        return fmt.Errorf("region %s not found", regionID)
+    }
+
+    config.TEEPairs = append(config.TEEPairs, *pair)
+    return rm.store.SetRegionConfig(regionID, config)
+}
+
+func (rm *RegionManager) GetTEEPairs(regionID string) ([]TEEPair, error) {
+    rm.cacheLock.RLock()
+    defer rm.cacheLock.RUnlock()
+
+    config, exists := rm.cache[regionID]
+    if !exists {
+        return nil, fmt.Errorf("region %s not found", regionID)
+    }
+
+    return config.TEEPairs, nil
 }
 
 
@@ -356,4 +372,13 @@ func (rm *RegionManager) InvalidateCache(regionID string) {
     rm.cacheLock.Lock()
     defer rm.cacheLock.Unlock()
     delete(rm.cache, regionID)
+}
+
+// ListRegions returns a list of all configured region IDs
+func (m *RegionManager) ListRegions() []string {
+	regions := make([]string, 0, len(m.configs))
+	for regionID := range m.configs {
+		regions = append(regions, regionID)
+	}
+	return regions
 }

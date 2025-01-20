@@ -38,13 +38,13 @@ func DefaultNodeClientConfig() NodeClientConfig {
 }
 
 func NewNodeClient(config NodeClientConfig) (*NodeClient, error) {
-    // Setup gRPC connection
+    // Connect to gRPC endpoint
     conn, err := grpc.Dial(config.Endpoint, grpc.WithInsecure())
     if err != nil {
         return nil, fmt.Errorf("failed to connect: %w", err)
     }
 
-    // Initialize TEE bridge
+    // Create TEE bridge
     bridge := tee.NewRustBridge(config.ControllerPath, config.WasmPath)
 
     return &NodeClient{

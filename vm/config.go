@@ -5,9 +5,20 @@ package vm
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/rhombus-tech/vm/compute"
+    "github.com/rhombus-tech/vm/regions"
 )
+
+type TEEConfig struct {
+    Pairs              map[string][]regions.TEEPair `json:"tee_pairs"`
+    HealthCheckInterval time.Duration              `json:"health_check_interval"`
+    MetricsInterval    time.Duration              `json:"metrics_interval"`
+    RetryAttempts      int                        `json:"retry_attempts"`
+    RetryDelay         time.Duration              `json:"retry_delay"`
+}
+
 
 // Config represents the configuration for the VM, including regional settings
 type Config struct {
@@ -15,9 +26,11 @@ type Config struct {
     ChainID   string `json:"chain_id"`
     
     ComputeNodeEndpoints map[string]compute.NodeClientConfig `json:"compute_node_endpoints"`
-    VerificationOnly     bool               `json:"verification_only"`
-    Regions             []RegionConfig      `json:"regions"`
-    MaxCodeSize uint64 `json:"max_code_size"`
+    ControllerPath      string                              `json:"controller_path"`
+    WasmPath           string                              `json:"wasm_path"`
+    VerificationOnly    bool                               `json:"verification_only"`
+    Regions            []RegionConfig                      `json:"regions"`
+    MaxCodeSize        uint64                              `json:"max_code_size"`
 }
 
 func DefaultConfig() *Config {
@@ -26,8 +39,10 @@ func DefaultConfig() *Config {
         ChainID: "",
         MaxCodeSize: 1024 * 1024, // 1MB default
         ComputeNodeEndpoints: make(map[string]compute.NodeClientConfig),
+        ControllerPath: "/usr/local/bin/tee-controller",
+        WasmPath: "/usr/local/bin/tee-wasm-module.wasm",
         Regions: []RegionConfig{},
-        VerificationOnly:     false,
+        VerificationOnly: false,
     }
 }
 

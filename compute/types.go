@@ -32,3 +32,4 @@ type TEEAttestation struct {
     Data        []byte    `json:"data"`
     RegionProof []byte    `json:"region_proof"`
 }
+

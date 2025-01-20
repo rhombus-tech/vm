@@ -34,12 +34,12 @@ type ShuttleVM struct {
     ctx          *snow.Context
     db           database.Database
     appSender    common.AppSender
-    stateManager *storage.StateManager  // Change to concrete type
+    stateManager *storage.StateManager
     verifier     *verifier.StateVerifier
-    computeNodes map[string]*compute.NodeClient
+    computeNodes map[string]*compute.NodeClient // Use the correct type
     config       *Config
     logger       logging.Logger
-    codeValidator *CodeValidator                 
+    codeValidator *CodeValidator
     teeValidator *Validator
     validatorMgr *validatorManager
     regionManager *regions.RegionManager
@@ -470,12 +470,11 @@ func (vm *ShuttleVM) IsVerificationOnly() bool {
     return vm.config.VerificationOnly
 }
 
-// Add this type to help with attestation verification
 type ExecutionVerifier struct {
     verifier *verifier.StateVerifier
 }
 
-// Add this method to ShuttleVM
+
 func (vm *ShuttleVM) verifyTEEExecution(
     ctx context.Context, 
     action chain.Action,
@@ -572,4 +571,104 @@ func (vm *ShuttleVM) verifySEVSignature(enclaveID, data, signature []byte) error
     // 1. Verifying the signing key belongs to a genuine SEV VM 
     // 2. Verifying the signature over the data
     return nil
+}
+
+func (vm *ShuttleVM) checkTEEHealth(ctx context.Context, endpoint string) error {
+    client, exists := vm.computeNodes[endpoint]
+    if !exists {
+        return fmt.Errorf("compute node not found for endpoint %s", endpoint)
+    }
+
+    // Validate connection
+    if err := client.ValidateConnection(ctx); err != nil {
+        return fmt.Errorf("connection validation failed: %w", err)
+    }
+
+    // Execute a simple health check request
+    req := &proto.ExecutionRequest{
+        RegionId:     "health-check",
+        FunctionCall: "health",
+        Parameters:   []byte("health-check"),
+    }
+
+    _, err := client.Execute(ctx, req)
+    if err != nil {
+        return fmt.Errorf("health check execution failed: %w", err)
+    }
+
+    return nil
+}
+
+func (vm *ShuttleVM) MonitorTEEHealth(ctx context.Context) {
+    ticker := time.NewTicker(30 * time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ticker.C:
+            regions := vm.regionManager.ListRegions()
+            
+            for _, regionID := range regions {
+                // Get and use the TEE pairs
+                pairs, err := vm.regionManager.GetTEEPairs(regionID)
+                if err != nil {
+                    log.Printf("Failed to get TEE pairs for region %s: %v", regionID, err)
+                    continue
+                }
+
+                // Iterate over the pairs and check each one
+                for _, pair := range pairs {
+                    // Check SGX health
+                    if err := vm.checkTEEHealth(ctx, pair.SGXEndpoint); err != nil {
+                        log.Printf("SGX health check failed for pair %s: %v", pair.ID, err)
+                        vm.updateTEEStatus(ctx, regionID, pair.ID, "sgx", "unhealthy")
+                    } else {
+                        vm.updateTEEStatus(ctx, regionID, pair.ID, "sgx", "healthy")
+                    }
+
+                    // Check SEV health
+                    if err := vm.checkTEEHealth(ctx, pair.SEVEndpoint); err != nil {
+                        log.Printf("SEV health check failed for pair %s: %v", pair.ID, err)
+                        vm.updateTEEStatus(ctx, regionID, pair.ID, "sev", "unhealthy")
+                    } else {
+                        vm.updateTEEStatus(ctx, regionID, pair.ID, "sev", "healthy")
+                    }
+                }
+            }
+        case <-ctx.Done():
+            return
+        }
+    }
+}
+
+func (vm *ShuttleVM) updateTEEStatus(ctx context.Context, regionID, pairID, teeType, status string) {
+    // Create metrics with the current status
+    metrics := &regions.TEEPairMetrics{
+        PairID:          pairID,
+        LastHealthCheck: time.Now(),
+    }
+
+    // Set metrics based on status
+    if status == "healthy" {
+        metrics.SuccessRate = 1.0
+        metrics.LoadFactor = 0.0
+        metrics.LastHealthy = time.Now()
+    } else {
+        metrics.SuccessRate = 0.0
+        metrics.LoadFactor = 1.0
+        // Don't update LastHealthy for unhealthy status
+    }
+
+    // Add TEE-specific endpoints
+    switch teeType {
+    case "sgx":
+        metrics.SGXEndpoint = pairID + "-sgx"
+    case "sev":
+        metrics.SEVEndpoint = pairID + "-sev"
+    }
+
+    // Update metrics through the balancer
+    if err := vm.regionManager.GetBalancer().UpdatePairMetrics(ctx, regionID, pairID, metrics); err != nil {
+        log.Printf("Failed to update TEE status metrics for %s-%s: %v", pairID, teeType, err)
+    }
 }

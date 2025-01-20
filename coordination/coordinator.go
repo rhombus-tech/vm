@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanchego/x/merkledb"
+    "github.com/rhombus-tech/vm/regions"
 )
 
 const (
@@ -469,6 +470,38 @@ func (c *Coordinator) GetWorker(id WorkerID) (*Worker, bool) {
     defer c.mu.RUnlock()
     worker, exists := c.workers[id]
     return worker, exists
+}
+
+func (c *Coordinator) RegisterTEEPair(ctx context.Context, regionID string, pair *regions.TEEPair) error {
+    // Register SGX worker
+    sgxWorker := &Worker{
+        ID:        WorkerID(pair.SGXID),
+        EnclaveID: pair.SGXID,
+        Status:    WorkerStatusIdle,
+    }
+    
+    // Register SEV worker
+    sevWorker := &Worker{
+        ID:        WorkerID(pair.SEVID),
+        EnclaveID: pair.SEVID,
+        Status:    WorkerStatusIdle,
+    }
+
+    if err := c.RegisterWorker(ctx, sgxWorker.ID, sgxWorker.EnclaveID); err != nil {
+        return err
+    }
+    
+    if err := c.RegisterWorker(ctx, sevWorker.ID, sevWorker.EnclaveID); err != nil {
+        return err
+    }
+
+    // Establish secure channel between workers
+    channel := NewSecureChannel(sgxWorker.ID, sevWorker.ID)
+    if err := channel.EstablishSecure(); err != nil {
+        return err
+    }
+
+    return nil
 }
 
 func (c *Coordinator) GetWorkerPair(regionID string) ([]WorkerID, error) {

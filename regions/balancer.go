@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -280,16 +281,14 @@ func (b *RegionBalancer) isRegionWithinThresholds(metrics *RegionMetrics) bool {
 		metrics.PendingTasks <= b.thresholds.MaxPendingTasks
 }
 
-func (b *RegionBalancer) GetRegionMetrics(regionID string) (*RegionMetrics, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	metrics, ok := b.metrics[regionID]
-	if !ok {
-		return nil, errors.New("region metrics not found")
-	}
-
-	return metrics, nil
+func (rb *RegionBalancer) GetRegionMetrics(regionID string) []TEEPairMetrics {
+    rb.mu.RLock()
+    defer rb.mu.RUnlock()
+    
+    if metrics, exists := rb.pairMetrics[regionID]; exists {
+        return metrics
+    }
+    return nil
 }
 
 // For testing/monitoring
@@ -338,6 +337,45 @@ func (rb *RegionBalancer) SelectOptimalPair(ctx context.Context, regionID string
     return selectedPair, nil
 }
 
+// regions/balancer.go
+
+// Add these helper functions
+func calculateLoadFactor(metrics *TEEPairMetrics) float64 {
+    // Example implementation - customize based on your needs
+    // This could consider:
+    // - Number of active tasks
+    // - CPU usage
+    // - Memory usage
+    // - Network load
+    // Returns a value between 0.0 and 1.0
+    
+    // Simple example:
+    if metrics.ExecutionTime == 0 {
+        return 0.0
+    }
+    
+    // Higher execution time means higher load
+    loadFactor := float64(metrics.ExecutionTime.Milliseconds()) / 1000.0 // Convert to seconds
+    if loadFactor > 1.0 {
+        loadFactor = 1.0
+    }
+    return loadFactor
+}
+
+func calculateSuccessRate(metrics *TEEPairMetrics) float64 {
+    // Example implementation - customize based on your needs
+    // This could consider:
+    // - Ratio of successful executions
+    // - Recent failures
+    // - Error rates
+    // Returns a value between 0.0 and 1.0
+    
+    // Simple example - using a constant success rate for now
+    return metrics.SuccessRate
+}
+
+
+
 func (rb *RegionBalancer) UpdatePairMetrics(ctx context.Context, regionID string, pairID string, metrics *TEEPairMetrics) error {
     rb.mu.Lock()
     defer rb.mu.Unlock()
@@ -363,4 +401,54 @@ func (rb *RegionBalancer) UpdatePairMetrics(ctx context.Context, regionID string
     return nil
 }
 
+func (rb *RegionBalancer) CollectMetrics(ctx context.Context) {
+    ticker := time.NewTicker(rb.thresholds.HealthCheckWindow)
+    defer ticker.Stop()
 
+    for {
+        select {
+        case <-ticker.C:
+            rb.mu.Lock()
+            for regionID, pairs := range rb.pairMetrics {
+                // Log region metrics collection
+                log.Printf("Collecting metrics for region: %s", regionID)
+                
+                for i := range pairs {
+                    metrics := &pairs[i]
+                    // Update load factor
+                    metrics.LoadFactor = calculateLoadFactor(metrics)
+                    // Update success rate
+                    metrics.SuccessRate = calculateSuccessRate(metrics)
+                    // Update last health check
+                    metrics.LastHealthCheck = time.Now()
+                    
+                    // Store updated metrics
+                    rb.pairMetrics[regionID][i] = *metrics
+                }
+            }
+            rb.mu.Unlock()
+        case <-ctx.Done():
+            return
+        }
+    }
+}
+
+func (rb *RegionBalancer) UpdateSpecificPairMetrics(regionID string, pairID string, updateFn func(*TEEPairMetrics)) error {
+    rb.mu.Lock()
+    defer rb.mu.Unlock()
+
+    pairs, exists := rb.pairMetrics[regionID]
+    if !exists {
+        return fmt.Errorf("region %s not found", regionID)
+    }
+
+    for i := range pairs {
+        if pairs[i].PairID == pairID {
+            updateFn(&pairs[i])
+            rb.pairMetrics[regionID][i] = pairs[i]
+            return nil
+        }
+    }
+
+    return fmt.Errorf("pair %s not found in region %s", pairID, regionID)
+}
