@@ -6,10 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
-
-	"github.com/ava-labs/avalanchego/x/merkledb"
 )
 
 var (
@@ -193,36 +190,16 @@ func (c *TEEPairConfig) GetEffectivePriority(loadFactor float64) int {
 }
 
 
-// RegionManager handles region configuration management
-// Storage interface defines methods required for region configuration persistence
-type Storage interface {
-	// SetRegionConfig stores a region configuration
-	SetRegionConfig(regionID string, config *RegionConfig) error
-
-	// GetRegionConfig retrieves a region configuration
-	GetRegionConfig(regionID string) (*RegionConfig, error)
-
-	// DeleteRegionConfig removes a region configuration
-	DeleteRegionConfig(ctx context.Context, regionID string) error
-
-	GetRegionProof(ctx context.Context, regionID string) (*merkledb.Proof, error)
-}
-
-type RegionManager struct {
-    configs    map[string]*RegionConfig
-    cache     map[string]*RegionConfig
-    cacheLock sync.RWMutex
-    balancer  *RegionBalancer
-    store     Storage
-}
-
 // NewRegionManager creates a new region manager instance
 func NewRegionManager(store Storage) *RegionManager {
     return &RegionManager{
         configs:   make(map[string]*RegionConfig),
         cache:     make(map[string]*RegionConfig),
-        balancer:  NewRegionBalancer(DefaultConfig()), // Add this function if not exists
+        balancer:  NewRegionBalancer(DefaultConfig()),
         store:     store,
+        // Initialize new maps
+        states:    make(map[string]map[string]*TEEPairState),
+        metrics:   make(map[string]map[string]*TEEPairMetrics),
     }
 }
 
@@ -453,10 +430,10 @@ func (rm *RegionManager) GetTEEPairs(regionID string) ([]TEEPair, error) {
 
 
 func (rm *RegionManager) GetRegionConfig(regionID string) (*RegionConfig, error) {
-    rm.cacheLock.RLock()
-    config, exists := rm.cache[regionID]
-    rm.cacheLock.RUnlock()
+    rm.cacheLock.RLock()  // Using cacheLock
+    defer rm.cacheLock.RUnlock()
     
+    config, exists := rm.cache[regionID]
     if exists {
         return config, nil
     }
