@@ -4,6 +4,7 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -25,6 +26,7 @@ import (
 	"github.com/rhombus-tech/vm/api/jsonrpc"
 	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/regions"
+	"github.com/rhombus-tech/vm/storage"
 	"github.com/rhombus-tech/vm/verifier"
 )
 
@@ -279,30 +281,40 @@ func (vm *ShuttleVM) GetObject(ctx context.Context, objectID string, regionID st
     return obj, nil
 }
 
-// GetValidEnclave retrieves enclave information
 func (vm *ShuttleVM) GetValidEnclave(ctx context.Context, enclaveID string, regionID string) (*core.EnclaveInfo, error) {
     if vm.stateManager == nil {
         return nil, fmt.Errorf("state manager not initialized")
     }
 
-    info, err := vm.stateManager.GetValidEnclave(
-        ctx,
-        vm.stateManager,
-        []byte(enclaveID),
-    )
+    // Create key for enclave lookup
+    key := makeEnclaveKey(enclaveID, regionID)
+    
+    // Get raw value from state
+    value, err := vm.stateManager.GetValue(ctx, key)
     if err != nil {
         return nil, fmt.Errorf("failed to get enclave info: %w", err)
     }
 
-    // Convert storage.EnclaveInfo to core.EnclaveInfo
+    // Unmarshal into storage format
+    var storageInfo storage.EnclaveInfo
+    if err := json.Unmarshal(value, &storageInfo); err != nil {
+        return nil, fmt.Errorf("failed to unmarshal enclave info: %w", err)
+    }
+
+    // Convert to core.EnclaveInfo - remove Status field if it's not in storage.EnclaveInfo
     return &core.EnclaveInfo{
-        Measurement: info.Measurement,
-        ValidFrom:   info.ValidFrom,
-        ValidUntil:  info.ValidUntil,
-        EnclaveType: info.EnclaveType,
-        RegionID:    info.RegionID,
+        Measurement: storageInfo.Measurement,
+        ValidFrom:   storageInfo.ValidFrom,
+        ValidUntil:  storageInfo.ValidUntil,
+        EnclaveType: storageInfo.EnclaveType,
+        RegionID:    storageInfo.RegionID,
     }, nil
 }
+
+func makeEnclaveKey(enclaveID, regionID string) []byte {
+    return []byte(fmt.Sprintf("enclave/%s/%s", regionID, enclaveID))
+}
+
 
 
 func (vm *ShuttleVM) CreateStaticHandlers(context.Context) (map[string]http.Handler, error) {

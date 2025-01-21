@@ -48,6 +48,7 @@ type StateManager struct {
     regionMu        sync.RWMutex
     regionalManager *RegionalStateManager
     merkleDB        merkledb.MerkleDB
+    baseStorage     coordination.BaseStorage
 }
 
 func (s *StateManager) GetValidEnclave(
@@ -116,16 +117,24 @@ func NewStateManager(
     store state.Mutable,
     dbForCoord merkledb.MerkleDB,
 ) (*StateManager, error) {
+    // Create base storage wrapper
+    baseStorage := NewStorageWrapper(db)
+    
+    // Create coordinator config
     coordCfg := &coordination.Config{
         MinWorkers:      2,
         MaxWorkers:      10,
         WorkerTimeout:   30 * time.Second,
         ChannelTimeout:  10 * time.Second,
     }
-    coord, err := coordination.NewCoordinator(coordCfg, dbForCoord)
+
+    // Create coordinator with base storage
+    coord, err := coordination.NewCoordinator(coordCfg, dbForCoord, baseStorage)
     if err != nil {
         return nil, fmt.Errorf("failed to init coordinator: %w", err)
     }
+    
+    // Start coordinator
     if err := coord.Start(); err != nil {
         return nil, fmt.Errorf("failed to start coordinator: %w", err)
     }
@@ -133,15 +142,20 @@ func NewStateManager(
     // Create regional manager
     regionalManager := NewRegionalStateManager(dbForCoord, store)
 
-    return &StateManager{
+    // Create state manager instance
+    sm := &StateManager{
         db:              db,
         backingStore:    store,
         coordinator:     coord,
         regionStores:    make(map[string]*MerkleStore),
         regionalManager: regionalManager,
-        merkleDB:        dbForCoord, 
-    }, nil
+        merkleDB:        dbForCoord,
+        baseStorage:     baseStorage, // Add base storage to struct
+    }
+
+    return sm, nil
 }
+
 
 
 func (s *StateManager) Iterator(ctx context.Context, prefix []byte) vm.Iterator {
@@ -580,3 +594,16 @@ var (
 )
 
 var _ state.Mutable = (*MerkleStore)(nil)
+
+func (s *StateManager) GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]byte, error) {
+    iter := s.db.NewIteratorWithPrefix(prefix)
+    defer iter.Release()
+    
+    var keys [][]byte
+    for iter.Next() {
+        key := make([]byte, len(iter.Key()))
+        copy(key, iter.Key())
+        keys = append(keys, key)
+    }
+    return keys, iter.Error()
+}

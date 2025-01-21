@@ -217,11 +217,11 @@ func (ms *MerkleStore) Insert(ctx context.Context, key []byte, value []byte) err
 
     // Create and marshal the message
     msg := &coordination.Message{
-        FromWorker: ms.workers[0],
-        ToWorker:   ms.workers[1],
-        Type:       coordination.MessageTypeData,
-        Data:       value,
-        Timestamp:  time.Now(),
+        From: ms.workers[0],        // Changed from FromWorker to From
+        To:   ms.workers[1],        // Changed from ToWorker to To
+        Type: coordination.MessageTypeData,
+        Data: value,
+        Timestamp: time.Now(),
     }
     
     // Marshal message to bytes

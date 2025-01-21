@@ -1,8 +1,9 @@
 package coordination
 
 import (
-    "errors"
-    "time"
+	"context"
+	"errors"
+	"time"
 )
 
 
@@ -50,4 +51,11 @@ type ChannelInfo struct {
 type TEEPair struct {
     SGXID []byte
     SEVID []byte
+}
+
+type BaseStorage interface {
+    Put(ctx context.Context, key []byte, value []byte) error
+    Get(ctx context.Context, key []byte) ([]byte, error)
+    Delete(ctx context.Context, key []byte) error
+    GetByPrefix(ctx context.Context, prefix []byte) ([][]byte, error)
 }

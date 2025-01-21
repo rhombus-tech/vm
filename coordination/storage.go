@@ -349,12 +349,3 @@ func (s *MerkleStorage) DeleteWorker(ctx context.Context, id WorkerID) error {
 func (s *MerkleStorage) Close() error {
     return nil // merkledb cleanup handled by parent
 }
-
-// Helper functions
-
-func makeChannelKey(worker1, worker2 WorkerID) string {
-    if worker1 < worker2 {
-        return string(worker1) + ":" + string(worker2)
-    }
-    return string(worker2) + ":" + string(worker1)
-}

@@ -37,38 +37,71 @@ import (
 
 // ShuttleVM represents a validator node in the network
 type ShuttleVM struct {
-    chainID       ids.ID
-    ctx          *snow.Context
-    db           database.Database
-    appSender    common.AppSender
-    stateManager *interfaces.StateManager
-    verifier     *verifier.StateVerifier
-    computeNodes map[string]*compute.NodeClient // Use the correct type
-    config       *Config
-    logger       logging.Logger
-    codeValidator *CodeValidator
-    teeValidator *Validator
-    validatorMgr *validatorManager
-    regionManager *regions.RegionManager
-    coordinator  *coordination.Coordinator
-    monitoringCtx    context.Context
+    chainID          ids.ID
+    config           *Config
+    ctx             *snow.Context
+    db              database.Database
+    appSender       common.AppSender
+    stateManager    interfaces.StateManager
+    verifier        *verifier.StateVerifier
+    computeNodes    map[string]*compute.NodeClient
+    logger          logging.Logger
+    codeValidator   *CodeValidator
+    teeValidator    *Validator
+    validatorMgr    *validatorManager
+    regionManager   *regions.RegionManager
+    coordinator     *coordination.Coordinator
+    monitoringCtx   context.Context
     monitoringCancel context.CancelFunc
 }
 
-func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM, error) {
-    // Create verifier for attestation checking
-    stateVerifier := verifier.New(nil) 
+func New(ctx context.Context, config *Config, logger logging.Logger, db database.Database) (*ShuttleVM, error) {
+    // Create database wrapper
+    dbWrapper := storage.NewDatabaseWrapper(db)
+
+    // Initialize merkleDB
+    merkleDB, err := merkledb.New(
+        ctx,
+        db,
+        merkledb.Config{
+            HistoryLength: 256,
+        },
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to create merkledb: %w", err)
+    }
+
+    // Create state manager first since other components depend on it
+    stateManager, err := storage.NewStateManager(db, dbWrapper, merkleDB)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create state manager: %w", err)
+    }
+
+    // Convert stateManager to interface
+    var stateManagerInterface interfaces.StateManager = stateManager
+
+    // Create TEE clients registry
+    teeRegistry := compute.NewTEERegistry(config.TEEConfig)
+
+    // Create base storage wrapper
+    baseStorage := storage.NewStorageWrapper(dbWrapper)
 
     // Initialize compute node connections
     computeNodes := make(map[string]*compute.NodeClient)
-    
     for region, nodeConfig := range config.ComputeNodeEndpoints {
         client, err := compute.NewNodeClient(nodeConfig)
         if err != nil {
+            // Clean up any existing connections before returning
+            for _, existing := range computeNodes {
+                existing.Close()
+            }
             return nil, fmt.Errorf("failed to connect to compute node for region %s: %w", region, err)
         }
         computeNodes[region] = client
     }
+
+    // Create verifier with state manager interface
+    stateVerifier := verifier.New(stateManagerInterface)
 
     // Create code validator with configured max size
     codeValidator := NewCodeValidator(config.MaxCodeSize)
@@ -76,43 +109,121 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
     // Create TEE validator
     teeValidator := NewValidator(stateVerifier)
 
-    // Create state manager
-    stateManager, err := storage.NewStateManager(db, dbWrapper, merkleDB)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create state manager: %w", err)
-    }
-
     // Create coordinator with correct parameters
     coordConfig := &coordination.Config{
-        MinWorkers:      2,
-        MaxWorkers:      10,
-        WorkerTimeout:   30 * time.Second,
-        ChannelTimeout:  10 * time.Second,
+        MinWorkers:         2,
+        MaxWorkers:         10,
+        WorkerTimeout:      30 * time.Second,
+        ChannelTimeout:     10 * time.Second,
+        TaskTimeout:        5 * time.Minute,
+        MaxTasks:           100,
+        TaskQueueSize:      1000,
+        EncryptionEnabled:  true,
+        RequireAttestation: true,
+        AttestationTimeout: 5 * time.Second,
+        StoragePath:        fmt.Sprintf("/tmp/coordinator-%s", config.ChainID),
+        PersistenceEnabled: true,
     }
 
-    baseStorage := storage.NewStorageWrapper(stateManager)
+    // Create coordinator
     coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, baseStorage)
     if err != nil {
+        // Clean up compute nodes
+        for _, client := range computeNodes {
+            client.Close()
+        }
         return nil, fmt.Errorf("failed to create coordinator: %w", err)
     }
 
-    // Create region store and manager
-    regionStore := storage.NewRegionStateStore(stateManager)
-    regionManager := regions.NewRegionManager(regionStore)
+    // Create region store using state manager interface
+    regionStore := storage.NewRegionStateStore(stateManagerInterface)
+    
+    // Create region manager with balancer config
+    balancerConfig := &regions.BalancerConfig{
+        MaxLoadFactor:     0.8,
+        MaxLatencyMs:      1000,
+        MaxErrorRate:      0.1,
+        MinSuccessRate:    0.95,
+        MinActiveWorkers:  2,
+        MaxPendingTasks:   1000,
+        HealthCheckWindow: 5 * time.Minute,
+        GeoPreference:     true,
+        MaxDistance:       5000,
+    }
+    
+    regionManager := regions.NewRegionManager(regionStore, balancerConfig)
+
+    // Create monitoring context with timeout
+    monitoringCtx, monitoringCancel := context.WithTimeout(context.Background(), 24*time.Hour)
 
     vm := &ShuttleVM{
-        config:        config,
-        computeNodes:  computeNodes,
-        verifier:      stateVerifier,
-        logger:        logger,
-        codeValidator: codeValidator,
-        teeValidator:  teeValidator,
-        stateManager:  stateManager,
-        coordinator:   coordinator,
-        regionManager: regionManager,
+        chainID:          config.ChainID,
+        config:           config,
+        db:              db,
+        computeNodes:    computeNodes,
+        verifier:        stateVerifier,
+        logger:          logger,
+        codeValidator:   codeValidator,
+        teeValidator:    teeValidator,
+        stateManager:    stateManagerInterface,
+        coordinator:     coordinator,
+        regionManager:   regionManager,
+        teeRegistry:    teeRegistry,
+        monitoringCtx:   monitoringCtx,
+        monitoringCancel: monitoringCancel,
+    }
+
+    // Start monitoring if not in verification-only mode
+    if !config.VerificationOnly {
+        if err := vm.startMonitoring(); err != nil {
+            // Clean up all resources
+            vm.cleanup()
+            return nil, fmt.Errorf("failed to start monitoring: %w", err)
+        }
     }
 
     return vm, nil
+}
+
+// Add cleanup helper method
+func (vm *ShuttleVM) cleanup() {
+    // Cancel monitoring
+    if vm.monitoringCancel != nil {
+        vm.monitoringCancel()
+    }
+
+    // Close compute nodes
+    for _, client := range vm.computeNodes {
+        client.Close()
+    }
+
+    // Stop coordinator
+    if vm.coordinator != nil {
+        vm.coordinator.Stop()
+    }
+
+    // Stop region manager
+    if vm.regionManager != nil {
+        vm.regionManager.Stop()
+    }
+}
+
+
+func (vm *ShuttleVM) startMonitoring() error {
+    // Start region monitoring
+    if err := vm.regionManager.StartMonitoring(vm.monitoringCtx); err != nil {
+        return fmt.Errorf("failed to start region monitoring: %w", err)
+    }
+
+    // Start TEE health monitoring
+    go vm.MonitorTEEHealth(vm.monitoringCtx)
+
+    // Start metrics collection
+    if balancer := vm.regionManager.GetBalancer(); balancer != nil {
+        go balancer.CollectMetrics(vm.monitoringCtx)
+    }
+
+    return nil
 }
 
 

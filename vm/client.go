@@ -46,6 +46,7 @@ type EnclaveInfo struct {
     ValidUntil  time.Time `json:"valid_until"`
     EnclaveType string    `json:"enclave_type"`
     RegionID    string    `json:"region_id"`
+    Status      string    `json:"status"`
 }
 
 type RegionResponse struct {

@@ -10,6 +10,9 @@ import (
 
 type StateManager interface {
     chain.StateManager
+    state.Mutable
+    
+    GetValue(ctx context.Context, key []byte) ([]byte, error)
     
     // Object operations
     GetObject(ctx context.Context, mu state.Mutable, id string, regionID string) (*core.ObjectState, error)
