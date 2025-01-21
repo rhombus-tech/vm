@@ -19,13 +19,6 @@ type Region struct {
     MaxEvents     int                 `json:"max_events"`
 }
 
-// TEEPairConfig represents the configuration for a TEE pair
-type TEEPairConfig struct {
-    ID          string `json:"id"`
-    SGXEndpoint string `json:"sgx_endpoint"`
-    SEVEndpoint string `json:"sev_endpoint"`
-    Status      string `json:"status"`
-}
 
 // TEEPairIdentity represents the core identification of a TEE pair
 type TEEPairIdentity struct {
@@ -33,15 +26,6 @@ type TEEPairIdentity struct {
     SEVID []byte
 }
 
-// TEEPairInfo represents complete information about a TEE pair
-type TEEPairInfo struct {
-    ID          string `json:"id"`
-    SGXID       []byte `json:"sgx_id"`
-    SEVID       []byte `json:"sev_id"`
-    SGXEndpoint string `json:"sgx_endpoint"`
-    SEVEndpoint string `json:"sev_endpoint"`
-    Status      string `json:"status"`
-}
 
 // TEEPairConnection represents the client connections for a TEE pair
 type TEEPairConnection struct {

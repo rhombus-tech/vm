@@ -60,18 +60,9 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
     stateVerifier := verifier.New(nil) 
 
     // Initialize compute node connections
-    // Declare the map first!
     computeNodes := make(map[string]*compute.NodeClient)
     
     for region, nodeConfig := range config.ComputeNodeEndpoints {
-        // Set default paths if they're empty
-        if nodeConfig.ControllerPath == "" {
-            nodeConfig.ControllerPath = "/usr/local/bin/tee-controller"
-        }
-        if nodeConfig.WasmPath == "" {
-            nodeConfig.WasmPath = "/usr/local/bin/tee-wasm-module.wasm"
-        }
-        
         client, err := compute.NewNodeClient(nodeConfig)
         if err != nil {
             return nil, fmt.Errorf("failed to connect to compute node for region %s: %w", region, err)
@@ -85,13 +76,40 @@ func New(ctx context.Context, config *Config, logger logging.Logger) (*ShuttleVM
     // Create TEE validator
     teeValidator := NewValidator(stateVerifier)
 
+    // Create state manager
+    stateManager, err := storage.NewStateManager(db, dbWrapper, merkleDB)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create state manager: %w", err)
+    }
+
+    // Create coordinator with correct parameters
+    coordConfig := &coordination.Config{
+        MinWorkers:      2,
+        MaxWorkers:      10,
+        WorkerTimeout:   30 * time.Second,
+        ChannelTimeout:  10 * time.Second,
+    }
+
+    baseStorage := storage.NewStorageWrapper(stateManager)
+    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, baseStorage)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create coordinator: %w", err)
+    }
+
+    // Create region store and manager
+    regionStore := storage.NewRegionStateStore(stateManager)
+    regionManager := regions.NewRegionManager(regionStore)
+
     vm := &ShuttleVM{
         config:        config,
-        computeNodes:  computeNodes,  // Now computeNodes is defined
+        computeNodes:  computeNodes,
         verifier:      stateVerifier,
         logger:        logger,
         codeValidator: codeValidator,
         teeValidator:  teeValidator,
+        stateManager:  stateManager,
+        coordinator:   coordinator,
+        regionManager: regionManager,
     }
 
     return vm, nil
