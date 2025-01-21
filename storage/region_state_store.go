@@ -180,20 +180,22 @@ func incrementBytes(b []byte) []byte {
 }
 
 func (s *RegionStateStore) GetRegionProof(ctx context.Context, regionID string) (*merkledb.Proof, error) {
-    // Now we can get both the store and error
-    store, err := s.stateManager.GetRegionalStore(regionID, s.stateManager.backingStore)
+    // Get the regional store
+    store, err := s.stateManager.GetRegionalStore(regionID)
     if err != nil {
         return nil, fmt.Errorf("failed to get regional store: %w", err)
     }
 
+    // Use the interface methods instead of accessing db directly
     key := makeRegionKey("config", regionID, "")
-    proof, err := store.db.GetProof(ctx, key)  // Use the MerkleDB directly
+    proof, err := store.GetProof(ctx, key)
     if err != nil {
         return nil, fmt.Errorf("failed to get proof: %w", err)
     }
 
     return proof, nil
 }
+
 
 func (s *RegionStateStore) GetTEEState(ctx context.Context, regionID, pairID string) (*regions.TEEPairState, error) {
     key := makeRegionKey("state", regionID, pairID)

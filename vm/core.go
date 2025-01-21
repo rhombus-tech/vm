@@ -53,10 +53,11 @@ type ShuttleVM struct {
     coordinator     *coordination.Coordinator
     monitoringCtx   context.Context
     monitoringCancel context.CancelFunc
+    teeRegistry *compute.TEERegistry
 }
 
 func New(ctx context.Context, config *Config, logger logging.Logger, db database.Database) (*ShuttleVM, error) {
-    // Create database wrapper
+    // Create database wrapper with Close method
     dbWrapper := storage.NewDatabaseWrapper(db)
 
     // Initialize merkleDB
@@ -77,11 +78,15 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create state manager: %w", err)
     }
 
-    // Convert stateManager to interface
-    var stateManagerInterface interfaces.StateManager = stateManager
+    // Create TEE clients registry with proper config conversion
+    computeConfig := &compute.Config{
+        MaxTasks:       int(config.TEEConfig.Capacity), // Convert uint64 to int
+        RegionID:      config.TEEConfig.ID,
+        WasmPath:      config.WasmPath,
+        ControllerPath: config.ControllerPath,
+    }
 
-    // Create TEE clients registry
-    teeRegistry := compute.NewTEERegistry(config.TEEConfig)
+    teeRegistry := compute.NewTEERegistry(computeConfig)
 
     // Create base storage wrapper
     baseStorage := storage.NewStorageWrapper(dbWrapper)
@@ -100,8 +105,8 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         computeNodes[region] = client
     }
 
-    // Create verifier with state manager interface
-    stateVerifier := verifier.New(stateManagerInterface)
+    // Create verifier with state manager
+    stateVerifier := verifier.New(stateManager)
 
     // Create code validator with configured max size
     codeValidator := NewCodeValidator(config.MaxCodeSize)
@@ -116,16 +121,16 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         WorkerTimeout:      30 * time.Second,
         ChannelTimeout:     10 * time.Second,
         TaskTimeout:        5 * time.Minute,
-        MaxTasks:           100,
-        TaskQueueSize:      1000,
-        EncryptionEnabled:  true,
+        MaxTasks:          100,
+        TaskQueueSize:     1000,
+        EncryptionEnabled: true,
         RequireAttestation: true,
         AttestationTimeout: 5 * time.Second,
-        StoragePath:        fmt.Sprintf("/tmp/coordinator-%s", config.ChainID),
+        StoragePath:       fmt.Sprintf("/tmp/coordinator-%s", config.ChainID),
         PersistenceEnabled: true,
     }
 
-    // Create coordinator
+    // Create coordinator with all required parameters
     coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, baseStorage)
     if err != nil {
         // Clean up compute nodes
@@ -135,29 +140,23 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create coordinator: %w", err)
     }
 
-    // Create region store using state manager interface
-    regionStore := storage.NewRegionStateStore(stateManagerInterface)
-    
-    // Create region manager with balancer config
-    balancerConfig := &regions.BalancerConfig{
-        MaxLoadFactor:     0.8,
-        MaxLatencyMs:      1000,
-        MaxErrorRate:      0.1,
-        MinSuccessRate:    0.95,
-        MinActiveWorkers:  2,
-        MaxPendingTasks:   1000,
-        HealthCheckWindow: 5 * time.Minute,
-        GeoPreference:     true,
-        MaxDistance:       5000,
+    // Create region store
+    regionStore := storage.NewRegionStateStore(stateManager)
+
+    // Create region manager
+    regionManager := regions.NewRegionManager(regionStore)
+
+    // Convert chainID to proper type
+    chainID, err := ids.FromString(config.ChainID)
+    if err != nil {
+        return nil, fmt.Errorf("invalid chain ID: %w", err)
     }
-    
-    regionManager := regions.NewRegionManager(regionStore, balancerConfig)
 
     // Create monitoring context with timeout
     monitoringCtx, monitoringCancel := context.WithTimeout(context.Background(), 24*time.Hour)
 
     vm := &ShuttleVM{
-        chainID:          config.ChainID,
+        chainID:          chainID,
         config:           config,
         db:              db,
         computeNodes:    computeNodes,
@@ -165,10 +164,10 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         logger:          logger,
         codeValidator:   codeValidator,
         teeValidator:    teeValidator,
-        stateManager:    stateManagerInterface,
+        stateManager:    stateManager,
         coordinator:     coordinator,
         regionManager:   regionManager,
-        teeRegistry:    teeRegistry,
+        teeRegistry:    teeRegistry,  // Include if part of struct
         monitoringCtx:   monitoringCtx,
         monitoringCancel: monitoringCancel,
     }

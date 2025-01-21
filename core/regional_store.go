@@ -8,16 +8,17 @@ import (
 
 // RegionalStore defines interface for region-specific state operations
 type RegionalStore interface {
-    // Basic state operations
-    Get(ctx context.Context, key []byte) ([]byte, error)
+    // State methods
+    GetValue(ctx context.Context, key []byte) ([]byte, error)
     Insert(ctx context.Context, key []byte, value []byte) error
-    Delete(ctx context.Context, key []byte) error
-    
-    // Merkle proof operations
+    Remove(ctx context.Context, key []byte) error
+
+    // Regional store methods
+    Get(ctx context.Context, key []byte) ([]byte, error)
+    Delete(ctx context.Context, key []byte) error  // Make sure this is included
     GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error)
     VerifyProof(ctx context.Context, proof *merkledb.Proof) error
-    
-    // Additional helper methods
     GetRegionID() string
     GetRoot(ctx context.Context) ([]byte, error)
 }
+

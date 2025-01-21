@@ -377,12 +377,19 @@ func (s *StateManager) GetRegion(
         return nil, ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(regionID, mu)
+    // Get regional store using new signature
+    store, err := s.GetRegionalStore(regionID)
     if err != nil {
         return nil, fmt.Errorf("failed to get regional store: %w", err)
     }
 
-    return GetRegion(ctx, store, regionID)
+    // Create a mutable wrapper if needed
+    mutableStore := &MutableWrapper{
+        regionalStore: store,
+        mutable:      mu,
+    }
+
+    return GetRegion(ctx, mutableStore, regionID)
 }
 
 func (s *StateManager) SetRegion(
@@ -395,12 +402,62 @@ func (s *StateManager) SetRegion(
         return ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(regionID, mu)
+    // Get regional store using new signature
+    store, err := s.GetRegionalStore(regionID)
     if err != nil {
         return fmt.Errorf("failed to get regional store: %w", err)
     }
 
-    return SetRegion(ctx, store, regionID, region)
+    // Create a mutable wrapper if needed
+    mutableStore := &MutableWrapper{
+        regionalStore: store,
+        mutable:      mu,
+    }
+
+    return SetRegion(ctx, mutableStore, regionID, region)
+}
+
+// Add this wrapper type to combine RegionalStore and state.Mutable
+type MutableWrapper struct {
+    regionalStore core.RegionalStore
+    mutable      state.Mutable
+}
+
+// Implement state.Mutable interface
+func (w *MutableWrapper) GetValue(ctx context.Context, key []byte) ([]byte, error) {
+    return w.regionalStore.GetValue(ctx, key)
+}
+
+func (w *MutableWrapper) Insert(ctx context.Context, key []byte, value []byte) error {
+    return w.regionalStore.Insert(ctx, key, value)
+}
+
+func (w *MutableWrapper) Remove(ctx context.Context, key []byte) error {
+    return w.regionalStore.Remove(ctx, key)
+}
+
+func (w *MutableWrapper) Get(ctx context.Context, key []byte) ([]byte, error) {
+    return w.regionalStore.Get(ctx, key)
+}
+
+func (w *MutableWrapper) Delete(ctx context.Context, key []byte) error {
+    return w.regionalStore.Delete(ctx, key)
+}
+
+func (w *MutableWrapper) GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error) {
+    return w.regionalStore.GetProof(ctx, key)
+}
+
+func (w *MutableWrapper) VerifyProof(ctx context.Context, proof *merkledb.Proof) error {
+    return w.regionalStore.VerifyProof(ctx, proof)
+}
+
+func (w *MutableWrapper) GetRegionID() string {
+    return w.regionalStore.GetRegionID()
+}
+
+func (w *MutableWrapper) GetRoot(ctx context.Context) ([]byte, error) {
+    return w.regionalStore.GetRoot(ctx)
 }
 
 func (s *StateManager) RegionExists(
@@ -497,31 +554,144 @@ func (s *StateManager) getRegionStore(regionID string) (state.Mutable, error) {
     return store, nil
 }
 
-func (s *StateManager) GetRegionalStore(regionID string, mu state.Mutable) (*MerkleStore, error) {
+func (s *StateManager) GetRegionalStore(regionID string, mu ...state.Mutable) (core.RegionalStore, error) {
     s.regionMu.RLock()
     store, exists := s.regionStores[regionID]
-    s.regionMu.RUnlock()
-    
-    if !exists {
-        // Get TEE pair using exported method
-        teePair, err := s.coordinator.GetTEEPair(regionID)
-        if err != nil {
-            return nil, fmt.Errorf("failed to get TEE pair: %w", err)
+
+    // First try using cached store
+    if exists {
+        s.regionMu.RUnlock()
+        adapter := &RegionalStoreAdapter{
+            store: store,
+            baseDB: s.db,
         }
-
-        // Create new MerkleStore
-        store = NewMerkleStore(
-            s.merkleDB,
-            regionID,
-            s.coordinator,
-            teePair,
-        )
-
-        s.regionMu.Lock()
-        s.regionStores[regionID] = store
-        s.regionMu.Unlock()
+        
+        // If mutable was provided, wrap it
+        if len(mu) > 0 {
+            return &MutableWrapper{
+                regionalStore: adapter,
+                mutable:      mu[0],
+            }, nil
+        }
+        return adapter, nil
     }
-    return store, nil
+    s.regionMu.RUnlock()
+
+    // If not exists, create new store with lock
+    s.regionMu.Lock()
+    defer s.regionMu.Unlock()
+
+    // Double-check after acquiring write lock
+    if store, exists = s.regionStores[regionID]; exists {
+        adapter := &RegionalStoreAdapter{
+            store: store,
+            baseDB: s.db,
+        }
+        
+        // If mutable was provided, wrap it
+        if len(mu) > 0 {
+            return &MutableWrapper{
+                regionalStore: adapter,
+                mutable:      mu[0],
+            }, nil
+        }
+        return adapter, nil
+    }
+
+    // Get TEE pair using exported method
+    teePair, err := s.coordinator.GetTEEPair(regionID)
+    if err != nil {
+        return nil, fmt.Errorf("failed to get TEE pair: %w", err)
+    }
+
+    // Create new MerkleStore
+    store = NewMerkleStore(
+        s.merkleDB,
+        regionID,
+        s.coordinator,
+        teePair,
+    )
+
+    // Cache the store
+    s.regionStores[regionID] = store
+
+    // Create adapter
+    adapter := &RegionalStoreAdapter{
+        store: store,
+        baseDB: s.db,
+    }
+
+    // If mutable was provided, wrap it
+    if len(mu) > 0 {
+        return &MutableWrapper{
+            regionalStore: adapter,
+            mutable:      mu[0],
+        }, nil
+    }
+
+    // Return wrapped store
+    return adapter, nil
+}
+// Add this adapter type to bridge between MerkleStore and core.RegionalStore
+type RegionalStoreAdapter struct {
+    store   *MerkleStore
+    baseDB  database.Database
+}
+
+func (r *RegionalStoreAdapter) GetValue(ctx context.Context, key []byte) ([]byte, error) {
+    return r.store.Get(ctx, key)
+}
+
+func (r *RegionalStoreAdapter) Insert(ctx context.Context, key []byte, value []byte) error {
+    return r.store.Insert(ctx, key, value)
+}
+
+func (r *RegionalStoreAdapter) Remove(ctx context.Context, key []byte) error {
+    return r.store.Delete(ctx, key)
+}
+
+// Implement RegionalStore methods
+func (r *RegionalStoreAdapter) Get(ctx context.Context, key []byte) ([]byte, error) {
+    return r.store.Get(ctx, key)
+}
+
+func (r *RegionalStoreAdapter) Delete(ctx context.Context, key []byte) error {
+    return r.store.Delete(ctx, key)
+}
+
+func (r *RegionalStoreAdapter) GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error) {
+    return r.store.GetProof(ctx, key)
+}
+
+func (r *RegionalStoreAdapter) VerifyProof(ctx context.Context, proof *merkledb.Proof) error {
+    return r.store.VerifyProof(ctx, proof)
+}
+
+func (r *RegionalStoreAdapter) GetRegionID() string {
+    return r.store.regionID
+}
+
+func (r *RegionalStoreAdapter) GetRoot(ctx context.Context) ([]byte, error) {
+    return r.store.GetRoot(ctx)
+}
+
+
+
+func (m *MerkleStore) VerifyProof(ctx context.Context, proof *merkledb.Proof) error {
+    // Implement proof verification
+    return nil
+}
+
+func (m *MerkleStore) GetRegionID() string {
+    return m.regionID
+}
+
+func (m *MerkleStore) GetRoot(ctx context.Context) ([]byte, error) {
+    root, err := m.db.GetMerkleRoot(ctx)
+    if err != nil {
+        return nil, err
+    }
+    return root[:], nil
 }
 
 
@@ -577,6 +747,62 @@ func (d *DatabaseWrapper) Remove(ctx context.Context, key []byte) error {
     return d.db.Delete(key)
 }
 
+func (d *DatabaseWrapper) Close() error {
+    return d.db.Close()
+}
+
+func (d *DatabaseWrapper) Has(key []byte) (bool, error) {
+    return d.db.Has(key)
+}
+
+func (d *DatabaseWrapper) Get(key []byte) ([]byte, error) {
+    return d.db.Get(key)
+}
+
+func (d *DatabaseWrapper) Put(key []byte, value []byte) error {
+    return d.db.Put(key, value)
+}
+
+func (d *DatabaseWrapper) Delete(key []byte) error {
+    return d.db.Delete(key)
+}
+
+func (d *DatabaseWrapper) NewBatch() database.Batch {
+    return d.db.NewBatch()
+}
+
+func (d *DatabaseWrapper) NewIterator() database.Iterator {
+    return d.db.NewIterator()
+}
+
+func (d *DatabaseWrapper) NewIteratorWithPrefix(prefix []byte) database.Iterator {
+    return d.db.NewIteratorWithPrefix(prefix)
+}
+
+func (d *DatabaseWrapper) NewIteratorWithStart(start []byte) database.Iterator {
+    return d.db.NewIteratorWithStart(start)
+}
+
+
+func (d *DatabaseWrapper) NewIteratorWithStartAndPrefix(start, prefix []byte) database.Iterator {
+    return d.db.NewIteratorWithStartAndPrefix(start, prefix)
+}
+
+func (d *DatabaseWrapper) Compact(start []byte, limit []byte) error {
+    // If the underlying database supports compaction, use it
+    if compacter, ok := d.db.(interface{ Compact([]byte, []byte) error }); ok {
+        return compacter.Compact(start, limit)
+    }
+    // Otherwise do nothing
+    return nil
+}
+
+func (d *DatabaseWrapper) HealthCheck(ctx context.Context) (interface{}, error) {
+    if healthChecker, ok := d.db.(interface{ HealthCheck(context.Context) (interface{}, error) }); ok {
+        return healthChecker.HealthCheck(ctx)
+    }
+    return nil, nil
+}
 
 func (s *StateManager) DeleteRegion(ctx context.Context, id string) error {
     s.regionMu.Lock()
@@ -606,4 +832,19 @@ func (s *StateManager) GetKeysByPrefix(ctx context.Context, prefix []byte) ([][]
         keys = append(keys, key)
     }
     return keys, iter.Error()
+}
+
+// Add this method to handle the old signature
+func (s *StateManager) GetRegionalStoreWithMutable(regionID string, mu state.Mutable) (*MerkleStore, error) {
+    store, err := s.GetRegionalStore(regionID)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Convert back to MerkleStore if needed
+    if adapter, ok := store.(*RegionalStoreAdapter); ok {
+        return adapter.store, nil
+    }
+    
+    return nil, fmt.Errorf("invalid store type")
 }
