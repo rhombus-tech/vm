@@ -380,3 +380,8 @@ func (rm *RegionManager) GetRegionHealth(ctx context.Context, regionID string) (
 func (rm *RegionManager) UpdateRegionMetrics(ctx context.Context, regionID string, metrics *TEEPairMetrics) error {
     return rm.store.SaveMetrics(ctx, regionID, "", metrics)
 }
+
+func (rm *RegionManager) Stop() error {
+    rm.StopMonitoring()
+    return nil
+}

@@ -14,8 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ava-labs/avalanchego/x/merkledb"
 	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/storage"
 	"github.com/rhombus-tech/vm/tee"
 	"github.com/rhombus-tech/vm/tee/proto"
 	"google.golang.org/grpc"
@@ -85,35 +87,65 @@ type AttestationReport struct {
     RegionProof    []byte    `json:"region_proof"` // Added for region verification
 }
 
-// Add constructor for ComputeNode
-func NewComputeNode(regionID string, config *Config) (*ComputeNode, error) {
-    // Create RustBridge instance
-    bridge := tee.NewRustBridge(config.ControllerPath, config.WasmPath)
+func NewComputeNode(config *Config) (*ComputeNode, error) {
+    // Create database wrapper or use existing one
+    dbWrapper := storage.NewDatabaseWrapper(config.DB)
 
-    // Create coordinator
-    coordConfig := &coordination.Config{
-        MinWorkers:      2,
-        MaxWorkers:      2,
-        WorkerTimeout:   30 * time.Second,
-        ChannelTimeout:  10 * time.Second,
+    // Initialize merkleDB
+    merkleDB, err := merkledb.New(
+        context.Background(),
+        config.DB,
+        merkledb.Config{
+            HistoryLength: 256,
+        },
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    coord, err := coordination.NewCoordinator(coordConfig, config.DB)
+    // Create base storage wrapper
+    baseStorage := storage.NewStorageWrapper(dbWrapper)
+
+    // Create coordinator config
+    coordConfig := &coordination.Config{
+        MinWorkers:         2,
+        MaxWorkers:         10,
+        WorkerTimeout:      30 * time.Second,
+        ChannelTimeout:     10 * time.Second,
+        TaskTimeout:        5 * time.Minute,
+        MaxTasks:          100,
+        TaskQueueSize:     1000,
+        EncryptionEnabled: true,
+        RequireAttestation: true,
+        AttestationTimeout: 5 * time.Second,
+        StoragePath:       fmt.Sprintf("/tmp/coordinator-%s", config.RegionID),
+        PersistenceEnabled: true,
+    }
+
+    // Create coordinator with all three required parameters
+    coordinator, err := coordination.NewCoordinator(
+        coordConfig,
+        merkleDB,
+        baseStorage,
+    )
     if err != nil {
         return nil, fmt.Errorf("failed to create coordinator: %w", err)
     }
 
-    node := &ComputeNode{
-        regionID:    regionID,
-        maxTasks:    config.MaxTasks,
-        bridge:      bridge,
-        coordinator: coord,
-        workers:     make(map[string]*coordination.Worker),
-    }
+    // Create RustBridge
+    bridge := tee.NewRustBridge(
+        config.ControllerPath,
+        config.WasmPath,
+    )
 
-    // Register workers
-    if err := node.registerWorkers(); err != nil {
-        return nil, err
+    // Initialize node with correct fields
+    node := &ComputeNode{
+        regionID:    config.RegionID,
+        maxTasks:    config.MaxTasks,
+        activeTasks: 0,
+        bridge:      bridge,
+        coordinator: coordinator,
+        workers:     make(map[string]*coordination.Worker),
     }
 
     return node, nil

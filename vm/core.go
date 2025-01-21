@@ -72,24 +72,14 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    // Create state manager first since other components depend on it
+    // Create base storage wrapper first since coordinator needs it
+    baseStorage := storage.NewStorageWrapper(dbWrapper)
+
+    // Create state manager
     stateManager, err := storage.NewStateManager(db, dbWrapper, merkleDB)
     if err != nil {
         return nil, fmt.Errorf("failed to create state manager: %w", err)
     }
-
-    // Create TEE clients registry with proper config conversion
-    computeConfig := &compute.Config{
-        MaxTasks:       int(config.TEEConfig.Capacity), // Convert uint64 to int
-        RegionID:      config.TEEConfig.ID,
-        WasmPath:      config.WasmPath,
-        ControllerPath: config.ControllerPath,
-    }
-
-    teeRegistry := compute.NewTEERegistry(computeConfig)
-
-    // Create base storage wrapper
-    baseStorage := storage.NewStorageWrapper(dbWrapper)
 
     // Initialize compute node connections
     computeNodes := make(map[string]*compute.NodeClient)
@@ -140,10 +130,10 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create coordinator: %w", err)
     }
 
-    // Create region store
-    regionStore := storage.NewRegionStateStore(stateManager)
+    // Create region store with interface type
+    regionStore := storage.NewRegionStateStore(interfaces.StateManager(stateManager))
 
-    // Create region manager
+    // Create region manager with single parameter
     regionManager := regions.NewRegionManager(regionStore)
 
     // Convert chainID to proper type
@@ -164,10 +154,9 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         logger:          logger,
         codeValidator:   codeValidator,
         teeValidator:    teeValidator,
-        stateManager:    stateManager,
+        stateManager:    interfaces.StateManager(stateManager), // Explicit conversion
         coordinator:     coordinator,
         regionManager:   regionManager,
-        teeRegistry:    teeRegistry,  // Include if part of struct
         monitoringCtx:   monitoringCtx,
         monitoringCancel: monitoringCancel,
     }
@@ -283,12 +272,16 @@ func (vm *ShuttleVM) Initialize(
         PersistenceEnabled: true,
     }
 
-    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB)
+    coordinator, err := coordination.NewCoordinator(
+        coordConfig,
+        merkleDB,
+        baseStorage, 
+    )
     if err != nil {
         return fmt.Errorf("failed to create coordinator: %w", err)
     }
     vm.coordinator = coordinator
-
+    
     // Start coordinator
     if err := vm.coordinator.Start(); err != nil {
         return fmt.Errorf("failed to start coordinator: %w", err)

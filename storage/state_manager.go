@@ -256,7 +256,7 @@ func (s *StateManager) GetObject(
         return nil, ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(regionID, mu)  // Updated to handle error
+    store, err := s.getRegionalStoreInternal(regionID, mu)
     if err != nil {
         return nil, fmt.Errorf("failed to get regional store: %w", err)
     }
@@ -294,7 +294,7 @@ func (s *StateManager) SetObject(
         return ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(obj.RegionID, mu)
+    store, err := s.getRegionalStoreInternal(obj.RegionID, mu)
     if err != nil {
         return fmt.Errorf("failed to get regional store: %w", err)
     }
@@ -325,9 +325,9 @@ func (s *StateManager) ObjectExists(
         return false, ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(regionID, mu)
+    store, err := s.getRegionalStoreInternal(regionID, mu)
     if err != nil {
-        return false, fmt.Errorf("failed to get regional store: %w", err)  // Return false, not nil
+        return false, fmt.Errorf("failed to get regional store: %w", err)
     }
 
     objKey := makeRegionKey(regionID, "object", id)
@@ -341,31 +341,32 @@ func (s *StateManager) ObjectExists(
     
     return value != nil, nil
 }
-// Event operations
+
 func (s *StateManager) SetEvent(
     ctx context.Context,
     mu state.Mutable,
     id string,
     event *core.Event,
     regionID string,
-) error {  // Just return error, not (bool, error)
+) error {
     if regionID == "" {
         return ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(regionID, mu)
+    store, err := s.getRegionalStoreInternal(regionID, mu)
     if err != nil {
-        return fmt.Errorf("failed to get regional store: %w", err)  // Just return the error
+        return fmt.Errorf("failed to get regional store: %w", err)
     }
 
     eventKey := makeRegionKey(regionID, "event", id)
     value, err := marshalState(event)
     if err != nil {
-        return fmt.Errorf("failed to marshal event: %w", err)  // Just return the error
+        return fmt.Errorf("failed to marshal event: %w", err)
     }
 
-    return store.Insert(ctx, eventKey, value)  // Just return the error
+    return store.Insert(ctx, eventKey, value)
 }
+
 
 // Region operations
 func (s *StateManager) GetRegion(
@@ -377,19 +378,13 @@ func (s *StateManager) GetRegion(
         return nil, ErrInvalidRegionID
     }
 
-    // Get regional store using new signature
-    store, err := s.GetRegionalStore(regionID)
+    // Use internal method to get store with mutable state
+    store, err := s.getRegionalStoreInternal(regionID, mu)
     if err != nil {
         return nil, fmt.Errorf("failed to get regional store: %w", err)
     }
 
-    // Create a mutable wrapper if needed
-    mutableStore := &MutableWrapper{
-        regionalStore: store,
-        mutable:      mu,
-    }
-
-    return GetRegion(ctx, mutableStore, regionID)
+    return GetRegion(ctx, store, regionID)
 }
 
 func (s *StateManager) SetRegion(
@@ -402,19 +397,13 @@ func (s *StateManager) SetRegion(
         return ErrInvalidRegionID
     }
 
-    // Get regional store using new signature
-    store, err := s.GetRegionalStore(regionID)
+    // Use internal method to get store with mutable state
+    store, err := s.getRegionalStoreInternal(regionID, mu)
     if err != nil {
         return fmt.Errorf("failed to get regional store: %w", err)
     }
 
-    // Create a mutable wrapper if needed
-    mutableStore := &MutableWrapper{
-        regionalStore: store,
-        mutable:      mu,
-    }
-
-    return SetRegion(ctx, mutableStore, regionID, region)
+    return SetRegion(ctx, store, regionID, region)
 }
 
 // Add this wrapper type to combine RegionalStore and state.Mutable
@@ -469,9 +458,9 @@ func (s *StateManager) RegionExists(
         return false, ErrInvalidRegionID
     }
 
-    store, err := s.GetRegionalStore(regionID, mu)
+    store, err := s.getRegionalStoreInternal(regionID, mu)
     if err != nil {
-        return false, fmt.Errorf("failed to get regional store: %w", err)  // Return false instead of nil
+        return false, fmt.Errorf("failed to get regional store: %w", err)
     }
 
     region, err := GetRegion(ctx, store, regionID)
@@ -480,7 +469,6 @@ func (s *StateManager) RegionExists(
     }
     return region != nil, nil
 }
-
 // Input object operations
 func (s *StateManager) SetInputObject(
     ctx context.Context,
@@ -505,7 +493,7 @@ func (s *StateManager) FeeKey() []byte {
 
 // Region-aware GetValue implementation
 func (s *StateManager) GetValue(ctx context.Context, key []byte) ([]byte, error) {
-    isRegional, regionID := s.isRegionalKey(key)
+    isRegional, regionID := s.IsRegionalKey(key)
     if isRegional {
         store, err := s.regionalManager.GetRegionalStore(regionID)
         if err != nil {
@@ -518,7 +506,7 @@ func (s *StateManager) GetValue(ctx context.Context, key []byte) ([]byte, error)
 
 // Update Insert to use regionalManager
 func (s *StateManager) Insert(ctx context.Context, key []byte, value []byte) error {
-    isRegional, regionID := s.isRegionalKey(key)
+    isRegional, regionID := s.IsRegionalKey(key)
     if isRegional {
         store, err := s.regionalManager.GetRegionalStore(regionID)
         if err != nil {
@@ -531,7 +519,7 @@ func (s *StateManager) Insert(ctx context.Context, key []byte, value []byte) err
 
 // Update Remove to use regionalManager
 func (s *StateManager) Remove(ctx context.Context, key []byte) error {
-    isRegional, regionID := s.isRegionalKey(key)
+    isRegional, regionID := s.IsRegionalKey(key)
     if isRegional {
         store, err := s.regionalManager.GetRegionalStore(regionID)
         if err != nil {
@@ -554,7 +542,12 @@ func (s *StateManager) getRegionStore(regionID string) (state.Mutable, error) {
     return store, nil
 }
 
-func (s *StateManager) GetRegionalStore(regionID string, mu ...state.Mutable) (core.RegionalStore, error) {
+func (s *StateManager) GetRegionalStore(regionID string) (core.RegionalStore, error) {
+    return s.getRegionalStoreInternal(regionID, nil)
+}
+
+// Internal method that maintains the variadic state.Mutable parameter
+func (s *StateManager) getRegionalStoreInternal(regionID string, mu ...state.Mutable) (core.RegionalStore, error) {
     s.regionMu.RLock()
     store, exists := s.regionStores[regionID]
 
@@ -632,6 +625,8 @@ func (s *StateManager) GetRegionalStore(regionID string, mu ...state.Mutable) (c
     // Return wrapped store
     return adapter, nil
 }
+
+
 // Add this adapter type to bridge between MerkleStore and core.RegionalStore
 type RegionalStoreAdapter struct {
     store   *MerkleStore
@@ -709,7 +704,7 @@ func (s *StateManager) Close() error {
 }
 
 // Helper functions
-func (s *StateManager) isRegionalKey(key []byte) (bool, string) {
+func (s *StateManager) IsRegionalKey(key []byte) (bool, string) {
     if bytes.HasPrefix(key, []byte("r/")) {
         parts := bytes.SplitN(key, []byte("/"), 3)
         if len(parts) >= 2 {
@@ -789,11 +784,9 @@ func (d *DatabaseWrapper) NewIteratorWithStartAndPrefix(start, prefix []byte) da
 }
 
 func (d *DatabaseWrapper) Compact(start []byte, limit []byte) error {
-    // If the underlying database supports compaction, use it
     if compacter, ok := d.db.(interface{ Compact([]byte, []byte) error }); ok {
         return compacter.Compact(start, limit)
     }
-    // Otherwise do nothing
     return nil
 }
 
