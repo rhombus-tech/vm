@@ -13,6 +13,12 @@ import (
     "github.com/rhombus-tech/vm/verifier"
 )
 
+const (
+    TEEPairStatusActive   = "active"
+    TEEPairStatusDegraded = "degraded"
+    TEEPairStatusFailed   = "failed"
+)
+
 // TEEPair holds SGX and SEV clients for a region
 type TEEPair struct {
     sgxClient proto.TeeExecutionClient
@@ -33,6 +39,29 @@ type Client struct {
     regionTEEs map[string]*TEEPair
 
     verifier *verifier.StateVerifier
+}
+
+func CreateTEEPair(config *TEEPairConfig) (*TEEPair, error) {
+    // Connect to SGX endpoint
+    sgxConn, err := grpc.Dial(config.SGXEndpoint, grpc.WithInsecure())
+    if err != nil {
+        return nil, fmt.Errorf("failed to connect to SGX: %w", err)
+    }
+
+    // Connect to SEV endpoint
+    sevConn, err := grpc.Dial(config.SEVEndpoint, grpc.WithInsecure())
+    if err != nil {
+        // If SEV fails, close SGX too
+        _ = sgxConn.Close()
+        return nil, fmt.Errorf("failed to connect to SEV: %w", err)
+    }
+
+    return &TEEPair{
+        sgxClient: proto.NewTeeExecutionClient(sgxConn),
+        sevClient: proto.NewTeeExecutionClient(sevConn),
+        sgxConn:   sgxConn,
+        sevConn:   sevConn,
+    }, nil
 }
 
 // NewClient creates a new client with default TEE connections
@@ -198,6 +227,24 @@ func (c *Client) compareResults(sgxRes, sevRes *proto.ExecutionResult) error {
     }
     if !bytes.Equal(sgxRes.Result, sevRes.Result) {
         return fmt.Errorf("execution result mismatch between SGX and SEV")
+    }
+    return nil
+}
+
+func (p *TEEPair) Close() error {
+    var errs []error
+    if p.sgxConn != nil {
+        if err := p.sgxConn.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("failed to close SGX connection: %w", err))
+        }
+    }
+    if p.sevConn != nil {
+        if err := p.sevConn.Close(); err != nil {
+            errs = append(errs, fmt.Errorf("failed to close SEV connection: %w", err))
+        }
+    }
+    if len(errs) > 0 {
+        return fmt.Errorf("errors closing connections: %v", errs)
     }
     return nil
 }

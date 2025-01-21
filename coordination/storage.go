@@ -30,6 +30,18 @@ type Storage interface {
     SaveRegion(ctx context.Context, region *Region) error
     LoadRegion(ctx context.Context, id string) (*Region, error) 
     DeleteRegion(ctx context.Context, id string) error
+    
+    SaveCoordinatorState(ctx context.Context, state map[string]interface{}) error
+    LoadCoordinatorState(ctx context.Context) (map[string]interface{}, error)
+
+    // TEE pair storage methods
+    SaveTEEPairInfo(ctx context.Context, info *TEEPairInfo) error
+    GetTEEPairInfo(ctx context.Context, pairID string) (*TEEPairInfo, error)
+    ListTEEPairInfo(ctx context.Context) ([]*TEEPairInfo, error)
+    
+    // Metrics storage methods
+    SaveTEEMetrics(ctx context.Context, pairID string, metrics *TEEPairMetrics) error
+    GetTEEMetrics(ctx context.Context, pairID string) (*TEEPairMetrics, error)
 
     // View management
     NewView(ctx context.Context, changes merkledb.ViewChanges) error
@@ -82,7 +94,6 @@ func (s *MerkleStorage) DeleteRegion(ctx context.Context, id string) error {
 
 // NewStorage creates a new storage instance
 func NewStorage(db merkledb.MerkleDB) (Storage, error) {
-    // Get initial view with empty changes
     view, err := db.NewView(context.Background(), merkledb.ViewChanges{})
     if err != nil {
         return nil, err
@@ -96,6 +107,76 @@ func NewStorage(db merkledb.MerkleDB) (Storage, error) {
             workers:  make(map[WorkerID]*Worker),
         },
     }, nil
+}
+
+// Implementation of Storage interface methods
+func (s *MerkleStorage) SaveTEEPairInfo(ctx context.Context, info *TEEPairInfo) error {
+    data, err := json.Marshal(info)
+    if err != nil {
+        return err
+    }
+    key := []byte(fmt.Sprintf("tee:pair:%s", info.ID))
+    return s.Put(ctx, key, data)
+}
+
+func (s *MerkleStorage) GetTEEPairInfo(ctx context.Context, pairID string) (*TEEPairInfo, error) {
+    key := []byte(fmt.Sprintf("tee:pair:%s", pairID))
+    data, err := s.Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    var info TEEPairInfo
+    if err := json.Unmarshal(data, &info); err != nil {
+        return nil, err
+    }
+    return &info, nil
+}
+
+func (s *MerkleStorage) ListTEEPairInfo(ctx context.Context) ([]*TEEPairInfo, error) {
+    // Implementation for listing TEE pairs
+    return nil, nil
+}
+
+func (s *MerkleStorage) SaveTEEMetrics(ctx context.Context, pairID string, metrics *TEEPairMetrics) error {
+    data, err := json.Marshal(metrics)
+    if err != nil {
+        return err
+    }
+    key := []byte(fmt.Sprintf("tee:metrics:%s", pairID))
+    return s.Put(ctx, key, data)
+}
+
+func (s *MerkleStorage) GetTEEMetrics(ctx context.Context, pairID string) (*TEEPairMetrics, error) {
+    key := []byte(fmt.Sprintf("tee:metrics:%s", pairID))
+    data, err := s.Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    var metrics TEEPairMetrics
+    if err := json.Unmarshal(data, &metrics); err != nil {
+        return nil, err
+    }
+    return &metrics, nil
+}
+
+func (s *MerkleStorage) SaveCoordinatorState(ctx context.Context, state map[string]interface{}) error {
+    data, err := json.Marshal(state)
+    if err != nil {
+        return err
+    }
+    return s.Put(ctx, []byte("coordinator:state"), data)
+}
+
+func (s *MerkleStorage) LoadCoordinatorState(ctx context.Context) (map[string]interface{}, error) {
+    data, err := s.Get(ctx, []byte("coordinator:state"))
+    if err != nil {
+        return nil, err
+    }
+    var state map[string]interface{}
+    if err := json.Unmarshal(data, &state); err != nil {
+        return nil, err
+    }
+    return state, nil
 }
 
 // Add to MerkleStorage implementation

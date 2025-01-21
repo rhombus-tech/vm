@@ -5,6 +5,13 @@ import (
     "time"
 )
 
+
+const (
+    MessageTypeTask MessageType = iota
+    MessageTypeStatus
+    MessageTypeResult
+)
+
 type WorkerID string
 
 var (
@@ -25,25 +32,6 @@ type Task struct {
     RegionID     string
 }
 
-// Message represents communication between workers
-type Message struct {
-    FromWorker WorkerID
-    ToWorker   WorkerID
-    Type       MessageType
-    Data       []byte
-    Timestamp  time.Time
-}
-
-type MessageType uint8
-
-const (
-    MessageTypeSync MessageType = iota
-    MessageTypeData
-    MessageTypeAttestation
-    MessageTypeComplete
-    MessageTypeVerification
-)
-
 // WorkerState tracks worker status
 type WorkerState struct {
     ID          WorkerID
@@ -53,16 +41,13 @@ type WorkerState struct {
     LastActive  time.Time
 }
 
-type WorkerStatus uint8
-
-const (
-    WorkerStatusIdle WorkerStatus = iota
-    WorkerStatusBusy
-    WorkerStatusError
-)
-
 type ChannelInfo struct {
     PartnerID  WorkerID
     SessionKey []byte
     Created    time.Time
+}
+
+type TEEPair struct {
+    SGXID []byte
+    SEVID []byte
 }

@@ -2,9 +2,11 @@
 package core
 
 import (
-    "context"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/state"
+	"context"
+
+	"github.com/ava-labs/avalanchego/x/merkledb"
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/state"
 )
 
 // StateManager extends chain.StateManager
@@ -42,4 +44,19 @@ type Coordinator interface {
     SubmitTask(ctx context.Context, task *Task) error
     SendMessage(msg *Message) error
     GetWorkerIDs() []WorkerID
+}
+
+type StorageView interface {
+    GetValue(ctx context.Context, key []byte) ([]byte, error)
+    Insert(ctx context.Context, key []byte, value []byte) error
+    Delete(ctx context.Context, key []byte) error
+    Commit() error
+}
+
+type CoordinationStorage interface {
+    NewView(ctx context.Context) (StorageView, error)
+    GetValue(ctx context.Context, key []byte) ([]byte, error)
+    Insert(ctx context.Context, key []byte, value []byte) error
+    Delete(ctx context.Context, key []byte) error
+    GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error)
 }

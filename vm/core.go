@@ -32,6 +32,7 @@ import (
 	"github.com/rhombus-tech/vm/storage"
 	"github.com/rhombus-tech/vm/tee/proto"
 	"github.com/rhombus-tech/vm/verifier"
+    "github.com/rhombus-tech/vm/interfaces"
 )
 
 // ShuttleVM represents a validator node in the network
@@ -40,7 +41,7 @@ type ShuttleVM struct {
     ctx          *snow.Context
     db           database.Database
     appSender    common.AppSender
-    stateManager *storage.StateManager
+    stateManager *interfaces.StateManager
     verifier     *verifier.StateVerifier
     computeNodes map[string]*compute.NodeClient // Use the correct type
     config       *Config
@@ -199,6 +200,14 @@ func (vm *ShuttleVM) Initialize(
     if err := vm.regionManager.StartMonitoring(vm.monitoringCtx); err != nil {
         return fmt.Errorf("failed to start region monitoring: %w", err)
     }
+
+     // Start TEE health monitoring
+     go vm.MonitorTEEHealth(vm.monitoringCtx)
+
+     // Start metrics collection for the balancer
+     if balancer := vm.regionManager.GetBalancer(); balancer != nil {
+         go balancer.CollectMetrics(vm.monitoringCtx)
+     }
 
     return nil
 }

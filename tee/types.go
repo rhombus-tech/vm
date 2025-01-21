@@ -14,6 +14,45 @@ const (
     TEETypeSEV = "SEV"
 )
 
+// TEEPairInfo represents metadata about a TEE pair
+type TEEPairInfo struct {
+    ID          string `json:"id"`
+    SGXEndpoint string `json:"sgx_endpoint"`
+    SEVEndpoint string `json:"sev_endpoint"`
+    Status      string `json:"status"`
+    Attestations [2]core.TEEAttestation `json:"attestations,omitempty"`
+}
+
+// TEEPairConfig defines configuration for a TEE pair
+type TEEPairConfig struct {
+    ID          string        `json:"id"`
+    SGXEndpoint string        `json:"sgx_endpoint"`
+    SEVEndpoint string        `json:"sev_endpoint"`
+    Thresholds  Thresholds    `json:"thresholds"`
+}
+
+// Thresholds defines operational thresholds for a TEE pair
+type Thresholds struct {
+    MinSuccessRate float64       `json:"min_success_rate"`
+    MaxErrorRate   float64       `json:"max_error_rate"`
+    MaxLatency     time.Duration `json:"max_latency"`
+    MaxLoadFactor  float64       `json:"max_load_factor"`
+}
+
+// TEEPairMetrics holds runtime metrics for a TEE pair
+type TEEPairMetrics struct {
+    PairID          string        `json:"pair_id"`
+    SGXEndpoint     string        `json:"sgx_endpoint"`
+    SEVEndpoint     string        `json:"sev_endpoint"`
+    LastHealthCheck time.Time     `json:"last_health_check"`
+    LastHealthy     time.Time     `json:"last_healthy"`
+    SuccessRate     float64       `json:"success_rate"`
+    LoadFactor      float64       `json:"load_factor"`
+    ExecutionTime   time.Duration `json:"execution_time"`
+    ConsecutiveErrors uint64      `json:"consecutive_errors"`
+}
+
+
 // ShuttleEvent represents an event with proper time handling
 type ShuttleEvent struct {
     ID           string

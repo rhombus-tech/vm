@@ -415,7 +415,6 @@ func (rm *RegionManager) GetTEEPairs(regionID string) ([]TEEPair, error) {
     return config.TEEPairs, nil
 }
 
-
 func (rm *RegionManager) GetRegionConfig(regionID string) (*RegionConfig, error) {
     rm.cacheLock.RLock()  // Using cacheLock
     defer rm.cacheLock.RUnlock()
@@ -468,10 +467,13 @@ func (rm *RegionManager) InvalidateCache(regionID string) {
 }
 
 // ListRegions returns a list of all configured region IDs
-func (m *RegionManager) ListRegions() []string {
-	regions := make([]string, 0, len(m.configs))
-	for regionID := range m.configs {
-		regions = append(regions, regionID)
-	}
-	return regions
+func (rm *RegionManager) ListRegions() []string {
+    rm.cacheLock.RLock()
+    defer rm.cacheLock.RUnlock()
+    
+    regions := make([]string, 0, len(rm.configs))
+    for regionID := range rm.configs {
+        regions = append(regions, regionID)
+    }
+    return regions
 }

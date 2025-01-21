@@ -1,9 +1,10 @@
 package coordination
 
 import (
-    "encoding/json"
-    "sync"
-    "time"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
 )
 
 type Worker struct {
@@ -11,41 +12,45 @@ type Worker struct {
     EnclaveID []byte               `json:"enclaveID"`
     Status    WorkerStatus         `json:"status"`
     Channels  map[WorkerID]*SecureChannel `json:"channels"`
-    
+    LastActive time.Time
     msgCh     chan *Message        // Unexported channels
     doneCh    chan struct{}
     coord     *Coordinator
     mu        sync.RWMutex
 }
 
-func NewWorker(id WorkerID, enclaveID []byte, coord *Coordinator) *Worker {
+func NewWorker(id WorkerID, enclaveID []byte, coordinator *Coordinator) *Worker {
     return &Worker{
-        ID:        id,
-        EnclaveID: enclaveID,
-        Status:    WorkerStatusIdle,
-        Channels:  make(map[WorkerID]*SecureChannel),
-        msgCh:     make(chan *Message, 100),
-        doneCh:    make(chan struct{}),
-        coord:     coord,
+        ID:         id,
+        EnclaveID:  enclaveID,
+        Status:     WorkerStatusIdle,
+        LastActive: time.Now(),
+        Channels:   make(map[WorkerID]*SecureChannel),
+        msgCh:      make(chan *Message, 100), // Buffer size of 100
+        doneCh:     make(chan struct{}),
     }
 }
 
 func (w *Worker) Start() error {
-    go w.processMessages()
+    w.Status = WorkerStatusActive
+    w.LastActive = time.Now()
     return nil
 }
 
 func (w *Worker) Stop() error {
-    close(w.doneCh)
+    w.Status = WorkerStatusIdle
     return nil
 }
 
 func (w *Worker) SendMessage(msg *Message) error {
+    // Add message to channel instead of direct handling
     select {
     case w.msgCh <- msg:
         return nil
-    case <-time.After(w.coord.config.ChannelTimeout):
-        return ErrTimeout
+    case <-w.doneCh:
+        return fmt.Errorf("worker stopped")
+    default:
+        return fmt.Errorf("message channel full")
     }
 }
 
@@ -53,34 +58,130 @@ func (w *Worker) processMessages() {
     for {
         select {
         case msg := <-w.msgCh:
-            w.handleMessage(msg)
+            if err := w.HandleMessage(msg); err != nil {
+                // Log or handle error
+                fmt.Printf("Error handling message: %v\n", err)
+            }
         case <-w.doneCh:
             return
         }
     }
 }
 
-func (w *Worker) handleMessage(msg *Message) {
+func (w *Worker) HandleMessage(msg *Message) error {
     w.mu.Lock()
     defer w.mu.Unlock()
 
-    channel, exists := w.Channels[msg.FromWorker]
-    if !exists {
-        channel = NewSecureChannel(w.ID, msg.FromWorker)
-        w.Channels[msg.FromWorker] = channel
+    // Update last active time
+    w.LastActive = time.Now()
+
+    // Verify message is intended for this worker
+    if msg.To != w.ID {
+        return fmt.Errorf("message not intended for this worker")
     }
 
+    // Handle message based on type
     switch msg.Type {
     case MessageTypeSync:
-        w.handleSync(msg, channel)
+        return w.handleSyncMessage(msg)
+        
     case MessageTypeData:
-        w.handleData(msg, channel)
-    case MessageTypeAttestation:
-        w.handleAttestation(msg, channel)
+        return w.handleDataMessage(msg)
+        
     case MessageTypeComplete:
-        w.handleComplete(msg, channel)
+        return w.handleCompleteMessage(msg)
+        
+    case MessageTypeAttestation:
+        return w.handleAttestationMessage(msg)
+        
+    case MessageTypeVerification:
+        return w.handleVerificationMessage(msg)
+        
+    default:
+        return fmt.Errorf("unknown message type: %v", msg.Type)
     }
 }
+
+func (w *Worker) handleSyncMessage(msg *Message) error {
+    // Create response message
+    response := &Message{
+        Type: MessageTypeComplete,
+        From: w.ID,
+        To:   msg.From,
+        Data: nil, // Add any response data if needed
+    }
+    
+    // Get channel and send response
+    channel, err := w.GetChannel(msg.From)
+    if err != nil {
+        return fmt.Errorf("failed to get channel: %w", err)
+    }
+    
+    return channel.Send(response.Data)
+}
+
+func (w *Worker) handleDataMessage(msg *Message) error {
+    // Process the data
+    if err := w.processData(msg.Data); err != nil {
+        return fmt.Errorf("failed to process  %w", err)
+    }
+    
+    // Send acknowledgment if needed
+    response := &Message{
+        Type: MessageTypeComplete,
+        From: w.ID,
+        To:   msg.From,
+    }
+    
+    channel, err := w.GetChannel(msg.From)
+    if err != nil {
+        return fmt.Errorf("failed to get channel: %w", err)
+    }
+    
+    return channel.Send(response.Data)
+}
+
+func (w *Worker) handleCompleteMessage(msg *Message) error {
+    // Handle completion acknowledgment
+    // You might want to update some state or notify other components
+    return nil
+}
+
+func (w *Worker) handleAttestationMessage(msg *Message) error {
+    // Handle attestation verification
+    // Implement your attestation logic here
+    return nil
+}
+
+func (w *Worker) handleVerificationMessage(msg *Message) error {
+    // Handle verification requests/responses
+    // Implement your verification logic here
+    return nil
+}
+
+func (w *Worker) processData(data []byte) error {
+    // Implement your data processing logic
+    // This could include:
+    // - Parsing the data
+    // - Performing computations
+    // - Updating state
+    // - etc.
+    return nil
+}
+
+func (w *Worker) GetChannel(otherWorker WorkerID) (*SecureChannel, error) {
+    channel, exists := w.Channels[otherWorker]
+    if !exists {
+        // Create new channel
+        channel = NewSecureChannel(w.ID, otherWorker)
+        if err := channel.EstablishSecure(); err != nil {
+            return nil, fmt.Errorf("failed to establish channel: %w", err)
+        }
+        w.Channels[otherWorker] = channel
+    }
+    return channel, nil
+}
+
 
 func (w *Worker) handleSync(msg *Message, channel *SecureChannel) {
     // Handle sync message

@@ -240,10 +240,6 @@ func (rm *RegionManager) GetTEEState(ctx context.Context, regionID string, pairI
     return state, nil
 }
 
-
-
-
-
 // GetMetrics gets the current metrics of a TEE pair
 func (rm *RegionManager) GetMetrics(ctx context.Context, regionID string, pairID string) (*TEEPairMetrics, error) {
     rm.cacheLock.RLock()

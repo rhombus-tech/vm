@@ -351,15 +351,11 @@ func calculateLoadFactor(metrics *TEEPairMetrics) float64 {
 }
 
 func calculateSuccessRate(metrics *TEEPairMetrics) float64 {
-    // Example implementation - customize based on your needs
-    // This could consider:
-    // - Ratio of successful executions
-    // - Recent failures
-    // - Error rates
-    // Returns a value between 0.0 and 1.0
-    
-    // Simple example - using a constant success rate for now
-    return metrics.SuccessRate
+    if metrics.TasksProcessed == 0 {
+        return 1.0 // No tasks processed yet
+    }
+    successfulTasks := metrics.TasksProcessed - metrics.FailedTasks
+    return float64(successfulTasks) / float64(metrics.TasksProcessed)
 }
 
 
