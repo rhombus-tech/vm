@@ -1,5 +1,5 @@
-// tests/integration/mock_db.go
-package integration
+// tests/mocks/mock_db.go
+package mockdb
 
 import (
     "bytes"
@@ -8,6 +8,13 @@ import (
     "sync"
 
     "github.com/ava-labs/avalanchego/database"
+)
+
+// Verify interface implementations
+var (
+    _ database.Database = &MockDB{}
+    _ database.Batch = &MockBatch{}
+    _ database.Iterator = &MockIterator{}
 )
 
 // MockDB implements database.Database

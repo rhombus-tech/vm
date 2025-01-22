@@ -24,7 +24,7 @@ import (
 	"github.com/rhombus-tech/vm/tee"
 	"github.com/rhombus-tech/vm/timeserver"
 	"github.com/rhombus-tech/vm/verifier"
-    mockdb "github.com/rhombus-tech/vm/tests/mocks"
+    "github.com/rhombus-tech/vm/mockdb"
 )
 
 type RegionMetrics struct {
@@ -66,42 +66,51 @@ func createTestAction() chain.Action {
 }
 
 func setupTestEnvironment(t *testing.T) (*MockVM, string) {
-    // Create mock database with actual implementation
-    mockDB := mockdb.NewMockDB()  // Use the alias here
+    require := require.New(t)
+
+    // Create mock database
+    mockDB := mockdb.NewMockDB()
+
+    // Create database wrapper
     dbWrapper := storage.NewDatabaseWrapper(mockDB)
 
-    // Initialize MerkleDB with config
-    merkleDB, err := merkledb.New(
-        context.Background(),
-        dbWrapper,
-        merkledb.Config{
-            BranchFactor:  16,
-            HistoryLength: 256,
-        },
-    )
-    if err != nil {
-        t.Fatalf("Failed to create MerkleDB: %v", err)
+    // Create merkleDB config
+    merkleConfig := merkledb.Config{
+        BranchFactor:  16,
+        HistoryLength: 256,
     }
 
-    // Create VM configuration
-    config := &compute.Config{
+    // Initialize MerkleDB
+    merkleDB, err := merkledb.New(context.Background(), dbWrapper, merkleConfig)
+    require.NoError(err)
+
+    // Create VM config
+    vmConfig := &compute.Config{
         MaxTasks: 100,
         Debug:    true,
-        DB:       merkleDB,
+        DB:       merkleDB,  // Pass the merkleDB we created
+        RegionID: "test-region",
     }
 
-    // Create VM
-    vm, err := NewMockVM(config)
-    if err != nil {
-        t.Fatalf("Failed to create MockVM: %v", err)
-    }
+    // Create MockVM - now only passing config
+    vm, err := NewMockVM(vmConfig)
+    require.NoError(err)
+
+    // Start the coordinator
+    err = vm.coordinator.Start()
+    require.NoError(err)
 
     // Register test region
     regionID := "test-region"
     err = vm.RegisterRegion(context.Background(), regionID, "mock://sgx", "mock://sev")
-    if err != nil {
-        t.Fatalf("Failed to register region: %v", err)
-    }
+    require.NoError(err)
+
+    // Setup cleanup for test
+    t.Cleanup(func() {
+        if vm.coordinator != nil {
+            vm.coordinator.Stop()
+        }
+    })
 
     return vm, regionID
 }
@@ -202,77 +211,78 @@ var _ chain.VM = &MockVM{}
 
 type MockVM struct {
     chain.VM
-    config     *compute.Config
-    teeClient  *tee.Client
-    mockTEE    TEEExecutor
-    regions    map[string]bool
-    objects    map[string]map[string]*core.ObjectState // map[regionID]map[objectID]ObjectState
-    mu         sync.RWMutex
-    coordinator *coordination.Coordinator
-    db         merkledb.MerkleDB
+    config       *compute.Config
+    teeClient    *tee.Client
+    mockTEE      TEEExecutor
+    regions      map[string]bool
+    objects      map[string]map[string]*core.ObjectState // map[regionID]map[objectID]ObjectState
+    mu           sync.RWMutex
+    coordinator  *coordination.Coordinator
+    db          merkledb.MerkleDB
+    stateManager *storage.DatabaseWrapper  // Add this field
 }
 
 func NewMockVM(config *compute.Config) (*MockVM, error) {
-    if config.DB == nil {
-        // Create default MerkleDB if not provided
-        mockDB := storage.NewDatabaseWrapper(nil)
-        merkleDB, err := merkledb.New(
-            context.Background(),
-            mockDB,
-            merkledb.Config{
-                BranchFactor:  16,
-                HistoryLength: 256,
-            },
-        )
-        if err != nil {
-            return nil, fmt.Errorf("failed to create default merkledb: %w", err)
-        }
-        config.DB = merkleDB
+    // Create mock database
+    mockDB := mocks.NewMockDB()
+    dbWrapper := storage.NewDatabaseWrapper(mockDB)
+
+    // Initialize MerkleDB
+    merkleDB, err := merkledb.New(
+        context.Background(),
+        dbWrapper,
+        merkledb.Config{
+            BranchFactor:  16,
+            HistoryLength: 256,
+        },
+    )
+    if err != nil {
+        return nil, fmt.Errorf("failed to create merkledb: %w", err)
+    }
+
+    // Create coordination storage
+    coordStorage := storage.NewCoordinationStorageWrapper(dbWrapper)
+
+    // Create coordinator config
+    coordConfig := &coordination.Config{
+        MinWorkers:         2,
+        MaxWorkers:         10,
+        WorkerTimeout:      30 * time.Second,
+        ChannelTimeout:     10 * time.Second,
+        TaskTimeout:        5 * time.Minute,
+        MaxTasks:          100,
+        TaskQueueSize:     1000,
+        EncryptionEnabled: true,
+        RequireAttestation: true,
+        AttestationTimeout: 5 * time.Second,
+        StoragePath:       "/tmp/coordinator-test",
+        PersistenceEnabled: true,
+    }
+
+    // Create coordinator
+    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, coordStorage)
+    if err != nil {
+        return nil, fmt.Errorf("failed to create coordinator: %w", err)
     }
 
     mockTee := newMockTEE()
-    stateVerifier := verifier.New(nil)
-   
+    stateVerifier := verifier.New(dbWrapper)
+
     teeClient, err := tee.NewClient("mock://sgx", "mock://sev", stateVerifier)
     if err != nil {
         return nil, err
     }
 
-    // Create coordination storage wrapper
-    coordStorage := storage.NewCoordinationStorageWrapper(storage.NewDatabaseWrapper(nil))
-
-    coordConfig := &coordination.Config{
-        MinWorkers:          2,
-        MaxWorkers:          10,
-        WorkerTimeout:       30 * time.Second,
-        ChannelTimeout:      10 * time.Second,
-        MaxMessageSize:      1024 * 1024,
-        EncryptionEnabled:   true,
-        RequireAttestation:  true,
-        AttestationTimeout:  5 * time.Second,
-        TaskCleanupInterval: time.Minute,
-    }
-
-    coordinator, err := coordination.NewCoordinator(coordConfig, config.DB, coordStorage)
-    if err != nil {
-        return nil, fmt.Errorf("failed to create coordinator: %w", err)
-    }
-
-    if err := coordinator.Start(); err != nil {
-        return nil, fmt.Errorf("failed to start coordinator: %w", err)
-    }
-
-    vm := &MockVM{
-        config:      config,
-        teeClient:   teeClient,
-        mockTEE:     mockTee,
-        regions:     make(map[string]bool),
-        objects:     make(map[string]map[string]*core.ObjectState),
-        coordinator: coordinator,
-        db:         config.DB,
-    }
-
-    return vm, nil
+    return &MockVM{
+        config:       config,
+        teeClient:    teeClient,
+        mockTEE:      mockTee,
+        regions:      make(map[string]bool),
+        objects:      make(map[string]map[string]*core.ObjectState),
+        coordinator:  coordinator,
+        db:          merkleDB,
+        stateManager: dbWrapper,
+    }, nil
 }
 
 func (vm *MockVM) RegisterRegion(ctx context.Context, regionID, sgxEndpoint, sevEndpoint string) error {
