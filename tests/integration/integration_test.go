@@ -24,6 +24,7 @@ import (
 	"github.com/rhombus-tech/vm/tee"
 	"github.com/rhombus-tech/vm/timeserver"
 	"github.com/rhombus-tech/vm/verifier"
+    mockdb "github.com/rhombus-tech/vm/tests/mocks"
 )
 
 type RegionMetrics struct {
@@ -55,6 +56,7 @@ type mockTEE struct {
     mu          sync.RWMutex
 }
 
+
 func createTestAction() chain.Action {
     return &actions.CreateObjectAction{
         ID:       fmt.Sprintf("test-object-%d", time.Now().UnixNano()),
@@ -65,7 +67,7 @@ func createTestAction() chain.Action {
 
 func setupTestEnvironment(t *testing.T) (*MockVM, string) {
     // Create mock database with actual implementation
-    mockDB := NewMockDB()
+    mockDB := mockdb.NewMockDB()  // Use the alias here
     dbWrapper := storage.NewDatabaseWrapper(mockDB)
 
     // Initialize MerkleDB with config
@@ -103,6 +105,7 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
 
     return vm, regionID
 }
+
 
 
 func verifyTestResult(t *testing.T, result *core.ExecutionResult) {

@@ -12,14 +12,16 @@ import (
 
 // MockDB implements database.Database
 type MockDB struct {
-    data map[string][]byte
-    mu   sync.RWMutex
+    data  map[string][]byte
+    mu    sync.RWMutex
     batch database.Batch
 }
 
 func NewMockDB() *MockDB {
     db := &MockDB{
-         make(map[string][]byte),
+        data:  make(map[string][]byte),
+        mu:    sync.RWMutex{},
+        batch: nil,
     }
     db.batch = NewMockBatch(db)
     return db
@@ -107,6 +109,7 @@ func NewMockBatch(db *MockDB) *MockBatch {
         db:      db,
         writes:  make(map[string][]byte),
         deletes: make(map[string]struct{}),
+        size:    0,
     }
 }
 
