@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/ava-labs/avalanchego/x/merkledb"
+	"github.com/rhombus-tech/vm/interfaces"
 	"github.com/rhombus-tech/vm/regions"
 )
 
@@ -14,7 +15,7 @@ var _ regions.Storage = (*RegionStateStore)(nil)
 
 // RegionStateStore provides storage operations for region state
 type RegionStateStore struct {
-    stateManager *StateManager
+    stateManager interfaces.StateManager 
 }
 
 // RegionSettings defines region-specific settings
@@ -34,11 +35,12 @@ type LoadBalancerConfig struct {
 }
 
 // NewRegionStateStore creates a new RegionStateStore instance
-func NewRegionStateStore(sm *StateManager) *RegionStateStore {
+func NewRegionStateStore(sm interfaces.StateManager) *RegionStateStore {
     return &RegionStateStore{
         stateManager: sm,
     }
 }
+
 
 func (s *RegionStateStore) GetRegionConfig(regionID string) (*regions.RegionConfig, error) {
     ctx := context.Background()

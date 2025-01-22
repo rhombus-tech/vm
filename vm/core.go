@@ -72,9 +72,6 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    // Create coordination storage wrapper for coordinator
-    coordStorage := storage.NewCoordinationStorageWrapper(dbWrapper)
-
     // Create state manager
     stateManager, err := storage.NewStateManager(db, dbWrapper, merkleDB)
     if err != nil {
@@ -120,8 +117,12 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         PersistenceEnabled: true,
     }
 
-    // Create coordinator with coordination storage wrapper
-    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, coordStorage)
+    // Create coordinator using state manager's base storage
+    coordinator, err := coordination.NewCoordinator(
+        coordConfig,
+        merkleDB,
+        stateManager.GetBaseStorage(),
+    )
     if err != nil {
         // Clean up compute nodes
         for _, client := range computeNodes {
@@ -130,10 +131,10 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create coordinator: %w", err)
     }
 
-    // Create region store with interface type
-    regionStore := storage.NewRegionStateStore(interfaces.StateManager(stateManager))
+    // Create region store directly with state manager
+    regionStore := storage.NewRegionStateStore(stateManager)
 
-    // Create region manager with single parameter
+    // Create region manager
     regionManager := regions.NewRegionManager(regionStore)
 
     // Convert chainID to proper type
@@ -154,7 +155,7 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         logger:          logger,
         codeValidator:   codeValidator,
         teeValidator:    teeValidator,
-        stateManager:    interfaces.StateManager(stateManager),
+        stateManager:    stateManager, // stateManager already implements the interface
         coordinator:     coordinator,
         regionManager:   regionManager,
         monitoringCtx:   monitoringCtx,
@@ -272,10 +273,11 @@ func (vm *ShuttleVM) Initialize(
         PersistenceEnabled: true,
     }
 
+    // Create coordinator using state manager's base storage
     coordinator, err := coordination.NewCoordinator(
         coordConfig,
         merkleDB,
-        baseStorage, 
+        vm.stateManager.GetBaseStorage(), // Use state manager's base storage
     )
     if err != nil {
         return fmt.Errorf("failed to create coordinator: %w", err)
@@ -297,7 +299,7 @@ func (vm *ShuttleVM) Initialize(
     vm.monitoringCtx, vm.monitoringCancel = context.WithCancel(context.Background())
 
     // Initialize region store and manager
-    regionStore := storage.NewRegionStateStore(vm.stateManager)
+    regionStore := storage.NewRegionStateStore(vm.stateManager)  // Now accepts interface
     vm.regionManager = regions.NewRegionManager(regionStore)
 
     // Initialize validators
@@ -322,13 +324,13 @@ func (vm *ShuttleVM) Initialize(
         return fmt.Errorf("failed to start region monitoring: %w", err)
     }
 
-     // Start TEE health monitoring
-     go vm.MonitorTEEHealth(vm.monitoringCtx)
+    // Start TEE health monitoring
+    go vm.MonitorTEEHealth(vm.monitoringCtx)
 
-     // Start metrics collection for the balancer
-     if balancer := vm.regionManager.GetBalancer(); balancer != nil {
-         go balancer.CollectMetrics(vm.monitoringCtx)
-     }
+    // Start metrics collection for the balancer
+    if balancer := vm.regionManager.GetBalancer(); balancer != nil {
+        go balancer.CollectMetrics(vm.monitoringCtx)
+    }
 
     return nil
 }

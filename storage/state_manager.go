@@ -903,3 +903,4 @@ func (s *StateManager) GetRegionalStoreWithMutable(regionID string, mu state.Mut
 func (s *StateManager) GetBaseStorage() coordination.BaseStorage {
     return NewCoordinationStorageWrapper(NewDatabaseWrapper(s.db))
 }
+

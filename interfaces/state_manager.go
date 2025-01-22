@@ -2,10 +2,12 @@
 package interfaces
 
 import (
-    "context"
-    "github.com/ava-labs/hypersdk/chain"
-    "github.com/ava-labs/hypersdk/state"
-    "github.com/rhombus-tech/vm/core"
+	"context"
+
+	"github.com/ava-labs/hypersdk/chain"
+	"github.com/ava-labs/hypersdk/state"
+	"github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/core"
 )
 
 type StateManager interface {
@@ -40,4 +42,6 @@ type StateManager interface {
 
     GetRegionalStore(regionID string) (core.RegionalStore, error)
     IsRegionalKey(key []byte) (bool, string)
+
+    GetBaseStorage() coordination.BaseStorage
 }
