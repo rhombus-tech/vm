@@ -41,8 +41,10 @@ func (sw *StorageWrapper) Get(ctx context.Context, key []byte) ([]byte, error) {
 }
 
 func (sw *StorageWrapper) Delete(ctx context.Context, key []byte) error {
-    return sw.base.Delete(ctx, key)
+    return sw.base.Delete(ctx, key)  // Changed from sw.db to sw.base
 }
+
+
 
 // Channel operations
 func (sw *StorageWrapper) SaveChannel(ctx context.Context, channel *SecureChannel) error {

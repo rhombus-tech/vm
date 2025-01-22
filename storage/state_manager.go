@@ -17,9 +17,9 @@ import (
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state"
 
-	"github.com/rhombus-tech/vm"
 	"github.com/rhombus-tech/vm/coordination"
 	"github.com/rhombus-tech/vm/core"
+	"github.com/rhombus-tech/vm/interfaces"
 )
 
 var (
@@ -39,6 +39,13 @@ type EnclaveInfo struct {
     RegionID    string    `json:"region_id"`
 }
 
+type Region struct {
+    ID        string    `json:"id"`
+    CreatedAt time.Time `json:"created_at"`
+    Workers   []string  `json:"worker_ids"`
+    Status    string    `json:"status"`
+}
+
 // StateManager wraps lower-level storage operations
 type StateManager struct {
     db              database.Database
@@ -50,6 +57,7 @@ type StateManager struct {
     merkleDB        merkledb.MerkleDB
     baseStorage     coordination.BaseStorage
 }
+
 
 func (s *StateManager) GetValidEnclave(
     ctx context.Context, 
@@ -118,18 +126,29 @@ func NewStateManager(
     dbForCoord merkledb.MerkleDB,
 ) (*StateManager, error) {
     // Create base storage wrapper
-    baseStorage := NewStorageWrapper(db)
+    dbWrapper := NewDatabaseWrapper(db)
     
+    // Create coordination storage wrapper
+    coordStorage := NewCoordinationStorageWrapper(dbWrapper)
+
     // Create coordinator config
     coordCfg := &coordination.Config{
         MinWorkers:      2,
         MaxWorkers:      10,
         WorkerTimeout:   30 * time.Second,
         ChannelTimeout:  10 * time.Second,
+        TaskTimeout:     5 * time.Minute,
+        MaxTasks:       100,
+        TaskQueueSize:  1000,
+        EncryptionEnabled: true,
+        RequireAttestation: true,
+        AttestationTimeout: 5 * time.Second,
+        StoragePath:       "/tmp/coordinator",
+        PersistenceEnabled: true,
     }
 
-    // Create coordinator with base storage
-    coord, err := coordination.NewCoordinator(coordCfg, dbForCoord, baseStorage)
+    // Create coordinator with coordination storage
+    coord, err := coordination.NewCoordinator(coordCfg, dbForCoord, coordStorage)
     if err != nil {
         return nil, fmt.Errorf("failed to init coordinator: %w", err)
     }
@@ -150,7 +169,7 @@ func NewStateManager(
         regionStores:    make(map[string]*MerkleStore),
         regionalManager: regionalManager,
         merkleDB:        dbForCoord,
-        baseStorage:     baseStorage, // Add base storage to struct
+        baseStorage:     coordStorage,
     }
 
     return sm, nil
@@ -158,18 +177,28 @@ func NewStateManager(
 
 
 
-func (s *StateManager) Iterator(ctx context.Context, prefix []byte) vm.Iterator {
+func (s *StateManager) Iterator(ctx context.Context, prefix []byte) interfaces.Iterator {
     if bytes.HasPrefix(prefix, []byte("r/")) {
         parts := bytes.SplitN(prefix, []byte("/"), 3)
         if len(parts) >= 2 {
             regionID := string(parts[1])
             store, err := s.regionalManager.GetRegionalStore(regionID)
             if err == nil {
-                return NewRegionIterator(ctx, store.db, prefix)
+                // Convert to interfaces.Iterator
+                return &RegionIterator{
+                    ctx:    ctx,
+                    iter:   store.db.NewIteratorWithPrefix(prefix),
+                    prefix: prefix,
+                }
             }
         }
     }
-    return NewRegionIterator(ctx, s.db, prefix)
+    // Convert to interfaces.Iterator
+    return &RegionIterator{
+        ctx:    ctx,
+        iter:   s.db.NewIteratorWithPrefix(prefix),
+        prefix: prefix,
+    }
 }
 
 // Update balance operations to be region-aware if needed
@@ -404,6 +433,35 @@ func (s *StateManager) SetRegion(
     }
 
     return SetRegion(ctx, store, regionID, region)
+}
+
+func (s *StateManager) LoadRegion(ctx context.Context, id string) (*interfaces.Region, error) {
+    key := []byte(fmt.Sprintf("region/%s", id))
+    data, err := s.GetValue(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    
+    var region interfaces.Region
+    if err := json.Unmarshal(data, &region); err != nil {
+        return nil, err
+    }
+    return &region, nil
+}
+
+func (s *StateManager) SaveRegion(ctx context.Context, region *interfaces.Region) error {
+    data, err := json.Marshal(region)
+    if err != nil {
+        return fmt.Errorf("failed to marshal region: %w", err)
+    }
+    
+    key := []byte(fmt.Sprintf("region/%s", region.ID))
+    // Use Insert instead of GetValue since we're saving data
+    if err := s.Insert(ctx, key, data); err != nil {
+        return fmt.Errorf("failed to save region: %w", err)
+    }
+    
+    return nil
 }
 
 // Add this wrapper type to combine RegionalStore and state.Mutable
@@ -840,4 +898,8 @@ func (s *StateManager) GetRegionalStoreWithMutable(regionID string, mu state.Mut
     }
     
     return nil, fmt.Errorf("invalid store type")
+}
+
+func (s *StateManager) GetBaseStorage() coordination.BaseStorage {
+    return NewCoordinationStorageWrapper(NewDatabaseWrapper(s.db))
 }

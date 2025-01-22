@@ -88,7 +88,7 @@ type AttestationReport struct {
 }
 
 func NewComputeNode(config *Config) (*ComputeNode, error) {
-    // Create database wrapper or use existing one
+    // Create database wrapper
     dbWrapper := storage.NewDatabaseWrapper(config.DB)
 
     // Initialize merkleDB
@@ -103,8 +103,8 @@ func NewComputeNode(config *Config) (*ComputeNode, error) {
         return nil, fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    // Create base storage wrapper
-    baseStorage := storage.NewStorageWrapper(dbWrapper)
+    // Create coordination storage wrapper specifically for coordination package
+    coordStorage := storage.NewCoordinationStorageWrapper(dbWrapper)
 
     // Create coordinator config
     coordConfig := &coordination.Config{
@@ -122,11 +122,11 @@ func NewComputeNode(config *Config) (*ComputeNode, error) {
         PersistenceEnabled: true,
     }
 
-    // Create coordinator with all three required parameters
+    // Create coordinator using coordination storage wrapper
     coordinator, err := coordination.NewCoordinator(
         coordConfig,
         merkleDB,
-        baseStorage,
+        coordStorage, // Use coordStorage instead of storageWrapper
     )
     if err != nil {
         return nil, fmt.Errorf("failed to create coordinator: %w", err)

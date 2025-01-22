@@ -2,10 +2,11 @@
 package storage
 
 import (
-    "bytes"
-    "context"
-    "github.com/ava-labs/avalanchego/database"
-    "github.com/rhombus-tech/vm"
+	"bytes"
+	"context"
+
+	"github.com/ava-labs/avalanchego/database"
+	"github.com/rhombus-tech/vm/interfaces"
 )
 
 type RegionIterator struct {
@@ -19,15 +20,19 @@ type RegionIterator struct {
     }
 }
 
-func NewRegionIterator(ctx context.Context, db database.Database, prefix []byte) vm.Iterator {
-    iter := db.NewIteratorWithPrefix(prefix) // Use NewIteratorWithPrefix instead
+var _ interfaces.Iterator = &RegionIterator{}
+
+func NewRegionIterator(ctx context.Context, db database.Database, prefix []byte) *RegionIterator {
     return &RegionIterator{
         ctx:    ctx,
-        iter:   iter,
+        iter:   db.NewIteratorWithPrefix(prefix),
         prefix: prefix,
     }
 }
 
+
+
+// Implement interfaces.Iterator methods
 func (i *RegionIterator) Next() bool {
     if i.err != nil {
         return false
@@ -40,7 +45,6 @@ func (i *RegionIterator) Next() bool {
     default:
     }
 
-    // Use Next() from database.Iterator
     if !i.iter.Next() {
         return false
     }
@@ -88,6 +92,3 @@ func (i *RegionIterator) Error() error {
 func (i *RegionIterator) Close() {
     i.iter.Release()
 }
-
-// Ensure RegionIterator implements vm.Iterator
-var _ vm.Iterator = &RegionIterator{}

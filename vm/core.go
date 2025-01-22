@@ -72,8 +72,8 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         return nil, fmt.Errorf("failed to create merkledb: %w", err)
     }
 
-    // Create base storage wrapper first since coordinator needs it
-    baseStorage := storage.NewStorageWrapper(dbWrapper)
+    // Create coordination storage wrapper for coordinator
+    coordStorage := storage.NewCoordinationStorageWrapper(dbWrapper)
 
     // Create state manager
     stateManager, err := storage.NewStateManager(db, dbWrapper, merkleDB)
@@ -104,7 +104,7 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
     // Create TEE validator
     teeValidator := NewValidator(stateVerifier)
 
-    // Create coordinator with correct parameters
+    // Create coordinator config
     coordConfig := &coordination.Config{
         MinWorkers:         2,
         MaxWorkers:         10,
@@ -120,8 +120,8 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         PersistenceEnabled: true,
     }
 
-    // Create coordinator with all required parameters
-    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, baseStorage)
+    // Create coordinator with coordination storage wrapper
+    coordinator, err := coordination.NewCoordinator(coordConfig, merkleDB, coordStorage)
     if err != nil {
         // Clean up compute nodes
         for _, client := range computeNodes {
@@ -154,7 +154,7 @@ func New(ctx context.Context, config *Config, logger logging.Logger, db database
         logger:          logger,
         codeValidator:   codeValidator,
         teeValidator:    teeValidator,
-        stateManager:    interfaces.StateManager(stateManager), // Explicit conversion
+        stateManager:    interfaces.StateManager(stateManager),
         coordinator:     coordinator,
         regionManager:   regionManager,
         monitoringCtx:   monitoringCtx,

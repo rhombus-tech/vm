@@ -3,20 +3,17 @@ package storage
 
 import (
     "context"
-    "fmt"
     
     "github.com/ava-labs/avalanchego/database"
-    "github.com/ava-labs/avalanchego/x/merkledb"
     "github.com/rhombus-tech/vm/coordination"
 )
 
-// StorageWrapper implements coordination.BaseStorage interface
+// StorageWrapper implements both database.Database and coordination.BaseStorage
 type StorageWrapper struct {
     db database.Database
 }
 
 // Ensure StorageWrapper implements required interfaces
-var _ coordination.BaseStorage = (*StorageWrapper)(nil)
 var _ database.Database = (*StorageWrapper)(nil)
 
 func NewStorageWrapper(db database.Database) *StorageWrapper {
@@ -25,7 +22,7 @@ func NewStorageWrapper(db database.Database) *StorageWrapper {
     }
 }
 
-// Implement database.Database interface methods
+// database.Database interface methods
 func (sw *StorageWrapper) Put(key []byte, value []byte) error {
     return sw.db.Put(key, value)
 }
@@ -38,7 +35,35 @@ func (sw *StorageWrapper) Delete(key []byte) error {
     return sw.db.Delete(key)
 }
 
-// Context-based operations
+func (sw *StorageWrapper) Has(key []byte) (bool, error) {
+    return sw.db.Has(key)
+}
+
+func (sw *StorageWrapper) Close() error {
+    return sw.db.Close()
+}
+
+func (sw *StorageWrapper) NewBatch() database.Batch {
+    return sw.db.NewBatch()
+}
+
+func (sw *StorageWrapper) NewIterator() database.Iterator {
+    return sw.db.NewIterator()
+}
+
+func (sw *StorageWrapper) NewIteratorWithStart(start []byte) database.Iterator {
+    return sw.db.NewIteratorWithStart(start)
+}
+
+func (sw *StorageWrapper) NewIteratorWithPrefix(prefix []byte) database.Iterator {
+    return sw.db.NewIteratorWithPrefix(prefix)
+}
+
+func (sw *StorageWrapper) NewIteratorWithStartAndPrefix(start, prefix []byte) database.Iterator {
+    return sw.db.NewIteratorWithStartAndPrefix(start, prefix)
+}
+
+// coordination.BaseStorage interface methods
 func (sw *StorageWrapper) PutWithContext(ctx context.Context, key []byte, value []byte) error {
     select {
     case <-ctx.Done():
@@ -66,10 +91,25 @@ func (sw *StorageWrapper) DeleteWithContext(ctx context.Context, key []byte) err
     }
 }
 
-func (sw *StorageWrapper) Close() error {
-    return sw.db.Close()
+func (sw *StorageWrapper) GetByPrefix(ctx context.Context, prefix []byte) ([][]byte, error) {
+    iter := sw.db.NewIteratorWithPrefix(prefix)
+    defer iter.Release()
+
+    var results [][]byte
+    for iter.Next() {
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        default:
+            value := make([]byte, len(iter.Value()))
+            copy(value, iter.Value())
+            results = append(results, value)
+        }
+    }
+    return results, iter.Error()
 }
 
+// Additional helper methods
 func (sw *StorageWrapper) Compact(start []byte, limit []byte) error {
     if compacter, ok := sw.db.(interface{ Compact([]byte, []byte) error }); ok {
         return compacter.Compact(start, limit)
@@ -84,62 +124,7 @@ func (sw *StorageWrapper) HealthCheck(ctx context.Context) (interface{}, error) 
     return nil, nil
 }
 
-func (sw *StorageWrapper) Has(key []byte) (bool, error) {
-    return sw.db.Has(key)
-}
-
-func (sw *StorageWrapper) NewBatch() database.Batch {
-    return sw.db.NewBatch()
-}
-
-func (sw *StorageWrapper) NewIterator() database.Iterator {
-    return sw.db.NewIterator()
-}
-
-func (sw *StorageWrapper) NewIteratorWithStart(start []byte) database.Iterator {
-    return sw.db.NewIteratorWithStart(start)
-}
-
-func (sw *StorageWrapper) NewIteratorWithPrefix(prefix []byte) database.Iterator {
-    return sw.db.NewIteratorWithPrefix(prefix)
-}
-
-func (sw *StorageWrapper) NewIteratorWithStartAndPrefix(start, prefix []byte) database.Iterator {
-    return sw.db.NewIteratorWithStartAndPrefix(start, prefix)
-}
-
-// Additional helper methods for coordination
-func (sw *StorageWrapper) GetByPrefix(ctx context.Context, prefix []byte) ([][]byte, error) {
-    results := make([][]byte, 0)
-    iter := sw.db.NewIteratorWithPrefix(prefix)
-    defer iter.Release()
-
-    for iter.Next() {
-        select {
-        case <-ctx.Done():
-            return nil, ctx.Err()
-        default:
-            value := make([]byte, len(iter.Value()))
-            copy(value, iter.Value())
-            results = append(results, value)
-        }
-    }
-    
-    if err := iter.Error(); err != nil {
-        return nil, fmt.Errorf("iterator error: %w", err)
-    }
-    
-    return results, nil
-}
-
-// Batch operations support
-func (sw *StorageWrapper) Batch() *StorageBatch {
-    return &StorageBatch{
-        batch: sw.db.NewBatch(),
-    }
-}
-
-// StorageBatch handles batched operations
+// StorageBatch implementation
 type StorageBatch struct {
     batch database.Batch
 }
@@ -168,18 +153,62 @@ func (sb *StorageBatch) Replay(w database.KeyValueWriterDeleter) error {
     return sb.batch.Replay(w)
 }
 
-// Merkle proof support
-func (sw *StorageWrapper) GetProof(ctx context.Context, key []byte) (*merkledb.Proof, error) {
-    return nil, fmt.Errorf("merkle proofs not implemented")
+// Create a CoordinationStorageWrapper for use with coordination package
+type CoordinationStorageWrapper struct {
+    db database.Database
 }
 
-func (sw *StorageWrapper) VerifyProof(ctx context.Context, proof *merkledb.Proof) error {
-    return fmt.Errorf("merkle proof verification not implemented")
-}
-
-// Metrics and monitoring
-func (sw *StorageWrapper) Stats() map[string]interface{} {
-    return map[string]interface{}{
-        "type": "storage_wrapper",
+func NewCoordinationStorageWrapper(db database.Database) *CoordinationStorageWrapper {
+    return &CoordinationStorageWrapper{
+        db: db,
     }
 }
+
+// Implement coordination.BaseStorage interface
+func (csw *CoordinationStorageWrapper) Put(ctx context.Context, key []byte, value []byte) error {
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    default:
+        return csw.db.Put(key, value)
+    }
+}
+
+func (csw *CoordinationStorageWrapper) Get(ctx context.Context, key []byte) ([]byte, error) {
+    select {
+    case <-ctx.Done():
+        return nil, ctx.Err()
+    default:
+        return csw.db.Get(key)
+    }
+}
+
+func (csw *CoordinationStorageWrapper) Delete(ctx context.Context, key []byte) error {
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    default:
+        return csw.db.Delete(key)
+    }
+}
+
+func (csw *CoordinationStorageWrapper) GetByPrefix(ctx context.Context, prefix []byte) ([][]byte, error) {
+    iter := csw.db.NewIteratorWithPrefix(prefix)
+    defer iter.Release()
+
+    var results [][]byte
+    for iter.Next() {
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        default:
+            value := make([]byte, len(iter.Value()))
+            copy(value, iter.Value())
+            results = append(results, value)
+        }
+    }
+    return results, iter.Error()
+}
+
+// Verify interface implementation
+var _ coordination.BaseStorage = (*CoordinationStorageWrapper)(nil)
