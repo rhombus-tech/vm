@@ -106,7 +106,7 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
     now := time.Now().UTC()
     defaultAttestations := [2]core.TEEAttestation{
         {
-            EnclaveID:   []byte("sgx-test"),
+            EnclaveID:   []byte("sgx-test-enclave-id"),  // Only changed these two lines
             Measurement: []byte("measurement1"),
             Timestamp:   now,
             Data:        []byte("test-state-hash"),
@@ -114,7 +114,7 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
             Signature:   []byte("signature1"),
         },
         {
-            EnclaveID:   []byte("sev-test"),
+            EnclaveID:   []byte("sev-test-enclave-id"),  // Only changed these two lines
             Measurement: []byte("measurement2"),
             Timestamp:   now,
             Data:        []byte("test-state-hash"),
@@ -174,7 +174,6 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
 
     return vm, regionID
 }
-
 
 func verifyTestResult(t *testing.T, result *core.ExecutionResult) {
     require := require.New(t)
