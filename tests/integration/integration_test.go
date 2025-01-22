@@ -1397,7 +1397,7 @@ func TestTEEPairCoordination(t *testing.T) {
         {
             name: "TEE Pair State Synchronization",
             test: func(t *testing.T) {
-                // Create initial state
+                // Create initial state with explicit enclave IDs
                 action := &actions.CreateObjectAction{
                     ID:       "sync-test",
                     RegionID: regionID,
@@ -1408,11 +1408,13 @@ func TestTEEPairCoordination(t *testing.T) {
                 result1, err := testVM.ExecuteInRegion(ctx, regionID, action)
                 require.NoError(err)
                 require.NotNil(result1)
-
-                // Verify both TEEs have same state
+                
+                // Verify enclave IDs and state
+                require.NotEmpty(result1.Attestations[0].EnclaveID)
+                require.NotEmpty(result1.Attestations[1].EnclaveID)
                 require.Equal(result1.Attestations[0].Data, result1.Attestations[1].Data)
 
-                // Execute another action to verify state consistency
+                // Execute another action with verified attestations
                 event := &actions.SendEventAction{
                     IDTo:         "sync-test",
                     RegionID:     regionID,
@@ -1432,7 +1434,6 @@ func TestTEEPairCoordination(t *testing.T) {
             test: func(t *testing.T) {
                 metrics := make([]*RegionMetrics, 5)
                 
-                // Execute multiple operations
                 for i := 0; i < 5; i++ {
                     action := &actions.CreateObjectAction{
                         ID:       fmt.Sprintf("load-test-%d", i),
@@ -1441,25 +1442,25 @@ func TestTEEPairCoordination(t *testing.T) {
                         Storage:  []byte("test storage"),
                     }
                     
-                    _, err := testVM.ExecuteInRegion(ctx, regionID, action)
+                    result, err := testVM.ExecuteInRegion(ctx, regionID, action)
                     require.NoError(err)
+                    require.NotEmpty(result.Attestations[0].EnclaveID)
+                    require.NotEmpty(result.Attestations[1].EnclaveID)
 
-                    // Get metrics after each operation
                     m, err := testVM.GetRegionMetrics(ctx, regionID)
                     require.NoError(err)
                     metrics[i] = m
                 }
 
-                // Verify load distribution
                 sgxLoad := metrics[len(metrics)-1].TEEMetrics["sgx"].LoadFactor
                 sevLoad := metrics[len(metrics)-1].TEEMetrics["sev"].LoadFactor
-                require.InDelta(sgxLoad, sevLoad, 0.2) // Load should be roughly balanced
+                require.InDelta(sgxLoad, sevLoad, 0.2)
             },
         },
         {
             name: "TEE Pair Attestation Renewal",
             test: func(t *testing.T) {
-                // Create initial attestations
+                // Create initial attestations with explicit enclave IDs
                 action1 := &actions.CreateObjectAction{
                     ID:       "renewal-test",
                     RegionID: regionID,
@@ -1469,32 +1470,49 @@ func TestTEEPairCoordination(t *testing.T) {
 
                 result1, err := testVM.ExecuteInRegion(ctx, regionID, action1)
                 require.NoError(err)
-                initialAttestations := result1.Attestations
+                require.NotEmpty(result1.Attestations[0].EnclaveID)
+                require.NotEmpty(result1.Attestations[1].EnclaveID)
 
-                // Wait a bit to ensure time difference
+                initialAttestations := [2]core.TEEAttestation{
+                    {
+                        EnclaveID:   []byte("sgx-test-enclave"),
+                        Measurement: result1.Attestations[0].Measurement,
+                        Timestamp:   result1.Attestations[0].Timestamp,
+                        Data:        result1.Attestations[0].Data,
+                        RegionProof: result1.Attestations[0].RegionProof,
+                        Signature:   result1.Attestations[0].Signature,
+                    },
+                    {
+                        EnclaveID:   []byte("sev-test-enclave"),
+                        Measurement: result1.Attestations[1].Measurement,
+                        Timestamp:   result1.Attestations[1].Timestamp,
+                        Data:        result1.Attestations[1].Data,
+                        RegionProof: result1.Attestations[1].RegionProof,
+                        Signature:   result1.Attestations[1].Signature,
+                    },
+                }
+
                 time.Sleep(100 * time.Millisecond)
 
-                // Execute another action
                 action2 := &actions.SendEventAction{
                     IDTo:         "renewal-test",
                     RegionID:     regionID,
                     FunctionCall: "test",
                     Parameters:   []byte("test"),
+                    Attestations: initialAttestations,
                 }
 
                 result2, err := testVM.ExecuteInRegion(ctx, regionID, action2)
                 require.NoError(err)
-                renewedAttestations := result2.Attestations
-
-                // Verify attestations were renewed
-                require.NotEqual(initialAttestations[0].Timestamp, renewedAttestations[0].Timestamp)
-                require.NotEqual(initialAttestations[1].Timestamp, renewedAttestations[1].Timestamp)
+                require.NotEmpty(result2.Attestations[0].EnclaveID)
+                require.NotEmpty(result2.Attestations[1].EnclaveID)
+                require.NotEqual(initialAttestations[0].Timestamp, result2.Attestations[0].Timestamp)
+                require.NotEqual(initialAttestations[1].Timestamp, result2.Attestations[1].Timestamp)
             },
         },
         {
             name: "TEE Pair Error Recovery",
             test: func(t *testing.T) {
-                // Create initial state
                 action := &actions.CreateObjectAction{
                     ID:       "recovery-test",
                     RegionID: regionID,
@@ -1504,15 +1522,14 @@ func TestTEEPairCoordination(t *testing.T) {
 
                 result1, err := testVM.ExecuteInRegion(ctx, regionID, action)
                 require.NoError(err)
+                require.NotEmpty(result1.Attestations[0].EnclaveID)
+                require.NotEmpty(result1.Attestations[1].EnclaveID)
 
-                // Simulate TEE failure
                 err = testVM.SimulateRegionFailure(regionID)
                 require.NoError(err)
 
-                // Wait for recovery
                 time.Sleep(200 * time.Millisecond)
 
-                // Try execution after recovery
                 event := &actions.SendEventAction{
                     IDTo:         "recovery-test",
                     RegionID:     regionID,
@@ -1525,12 +1542,13 @@ func TestTEEPairCoordination(t *testing.T) {
                 require.NoError(err)
                 require.NotNil(result2)
                 require.Len(result2.Attestations, 2)
+                require.NotEmpty(result2.Attestations[0].EnclaveID)
+                require.NotEmpty(result2.Attestations[1].EnclaveID)
             },
         },
         {
             name: "TEE Pair Performance Monitoring",
             test: func(t *testing.T) {
-                // Execute operations and collect performance data
                 var latencies []time.Duration
                 var loadFactors []float64
 
@@ -1543,8 +1561,10 @@ func TestTEEPairCoordination(t *testing.T) {
                         Storage:  []byte("test storage"),
                     }
 
-                    _, err := testVM.ExecuteInRegion(ctx, regionID, action)
+                    result, err := testVM.ExecuteInRegion(ctx, regionID, action)
                     require.NoError(err)
+                    require.NotEmpty(result.Attestations[0].EnclaveID)
+                    require.NotEmpty(result.Attestations[1].EnclaveID)
 
                     latencies = append(latencies, time.Since(start))
 
@@ -1553,7 +1573,6 @@ func TestTEEPairCoordination(t *testing.T) {
                     loadFactors = append(loadFactors, metrics.LoadFactor)
                 }
 
-                // Verify performance metrics
                 for i := range latencies {
                     require.Less(latencies[i], 1*time.Second)
                     require.True(loadFactors[i] >= 0 && loadFactors[i] <= 1.0)
