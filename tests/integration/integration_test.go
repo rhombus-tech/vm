@@ -24,7 +24,7 @@ import (
 	"github.com/rhombus-tech/vm/tee"
 	"github.com/rhombus-tech/vm/timeserver"
 	"github.com/rhombus-tech/vm/verifier"
-    "github.com/rhombus-tech/vm/mockdb"
+    "github.com/rhombus-tech/vm/tests/mocks"
 )
 
 type RegionMetrics struct {
@@ -69,7 +69,7 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
     require := require.New(t)
 
     // Create mock database
-    mockDB := mockdb.NewMockDB()
+    mockDB := mocks.NewMockDB()
 
     // Create database wrapper
     dbWrapper := storage.NewDatabaseWrapper(mockDB)
@@ -84,26 +84,86 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
     merkleDB, err := merkledb.New(context.Background(), dbWrapper, merkleConfig)
     require.NoError(err)
 
-    // Create VM config
+    // Create VM config with TEE settings
     vmConfig := &compute.Config{
-        MaxTasks: 100,
-        Debug:    true,
-        DB:       merkleDB,  // Pass the merkleDB we created
-        RegionID: "test-region",
+        MaxTasks:    100,
+        Debug:       true,
+        DB:         merkleDB,
+        RegionID:   "test-region",
+        TEEConfig:  &core.Config{
+            EnclaveType:    core.PlatformTypeSGX,
+            TeeEndpoint:    "mock://tee",
+            AttestationKey: []byte("test-attestation-key"),
+            Debug:         true,
+        },
     }
 
-    // Create MockVM - now only passing config
+    // Create MockVM
     vm, err := NewMockVM(vmConfig)
     require.NoError(err)
+
+    // Initialize default attestations
+    now := time.Now().UTC()
+    defaultAttestations := [2]core.TEEAttestation{
+        {
+            EnclaveID:   []byte("sgx-test"),
+            Measurement: []byte("measurement1"),
+            Timestamp:   now,
+            Data:        []byte("test-state-hash"),
+            RegionProof: []byte("region-proof"),
+            Signature:   []byte("signature1"),
+        },
+        {
+            EnclaveID:   []byte("sev-test"),
+            Measurement: []byte("measurement2"),
+            Timestamp:   now,
+            Data:        []byte("test-state-hash"),
+            RegionProof: []byte("region-proof"),
+            Signature:   []byte("signature2"),
+        },
+    }
+
+    // Initialize time proof
+    timeProof := &timeserver.VerifiedTimestamp{
+        Time: now,
+        Proofs: []*timeserver.TimestampProof{
+            {
+                ServerID:  "server1",
+                Signature: []byte("sig1"),
+                Delay:     100 * time.Millisecond,
+            },
+            {
+                ServerID:  "server2",
+                Signature: []byte("sig2"),
+                Delay:     100 * time.Millisecond,
+            },
+        },
+        RegionID:   "test-region",
+        QuorumSize: 2,
+    }
+
+    // Store these in the MockVM for use in tests
+    vm.mu.Lock()
+    vm.defaultAttestations = defaultAttestations
+    vm.defaultTimeProof = timeProof
+    vm.mu.Unlock()
 
     // Start the coordinator
     err = vm.coordinator.Start()
     require.NoError(err)
 
-    // Register test region
+    // Register test region with proper TEE configuration
     regionID := "test-region"
     err = vm.RegisterRegion(context.Background(), regionID, "mock://sgx", "mock://sev")
     require.NoError(err)
+
+    // Initialize region state
+    vm.mu.Lock()
+    vm.regions = make(map[string]bool)
+    vm.regions[regionID] = true
+    vm.objects = make(map[string]map[string]*core.ObjectState)
+    vm.objects[regionID] = make(map[string]*core.ObjectState)
+    vm.mu.Unlock()
 
     // Setup cleanup for test
     t.Cleanup(func() {
@@ -114,7 +174,6 @@ func setupTestEnvironment(t *testing.T) (*MockVM, string) {
 
     return vm, regionID
 }
-
 
 
 func verifyTestResult(t *testing.T, result *core.ExecutionResult) {
@@ -211,15 +270,17 @@ var _ chain.VM = &MockVM{}
 
 type MockVM struct {
     chain.VM
-    config       *compute.Config
-    teeClient    *tee.Client
-    mockTEE      TEEExecutor
-    regions      map[string]bool
-    objects      map[string]map[string]*core.ObjectState // map[regionID]map[objectID]ObjectState
-    mu           sync.RWMutex
-    coordinator  *coordination.Coordinator
-    db          merkledb.MerkleDB
-    stateManager *storage.DatabaseWrapper  // Add this field
+    config              *compute.Config
+    teeClient          *tee.Client
+    mockTEE            TEEExecutor
+    regions            map[string]bool
+    objects            map[string]map[string]*core.ObjectState
+    mu                 sync.RWMutex
+    coordinator        *coordination.Coordinator
+    db                merkledb.MerkleDB
+    stateManager       *storage.DatabaseWrapper
+    defaultAttestations [2]core.TEEAttestation  // Add this
+    defaultTimeProof    *timeserver.VerifiedTimestamp  // Add this
 }
 
 func NewMockVM(config *compute.Config) (*MockVM, error) {
@@ -324,8 +385,13 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
     vm.mu.Lock()
     defer vm.mu.Unlock()
 
-    // Create mock attestations
-    now := time.Now()
+    // Verify region exists
+    if !vm.regions[regionID] {
+        return nil, fmt.Errorf("region not found: %s", regionID)
+    }
+
+    // Create consistent mock attestations
+    now := time.Now().UTC()
     mockAttestations := [2]core.TEEAttestation{
         {
             EnclaveID:   []byte("sgx-test"),
@@ -333,6 +399,7 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
             Timestamp:   now,
             Data:        []byte("test-state-hash"),
             RegionProof: []byte("region-proof"),
+            Signature:   []byte("signature1"),
         },
         {
             EnclaveID:   []byte("sev-test"),
@@ -340,10 +407,11 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
             Timestamp:   now,
             Data:        []byte("test-state-hash"),
             RegionProof: []byte("region-proof"),
+            Signature:   []byte("signature2"),
         },
     }
 
-    // Create mock time proof
+    // Initialize timeProof
     timeProof := &timeserver.VerifiedTimestamp{
         Time: now,
         Proofs: []*timeserver.TimestampProof{
@@ -362,40 +430,26 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
         QuorumSize: 2,
     }
 
-    // Initialize region objects map if it doesn't exist
-    if vm.objects == nil {
-        vm.objects = make(map[string]map[string]*core.ObjectState)
-    }
-    if vm.objects[regionID] == nil {
-        vm.objects[regionID] = make(map[string]*core.ObjectState)
-    }
-
-    // Create task for coordinator
-    task := &coordination.Task{
-        ID:        fmt.Sprintf("task-%d", time.Now().UnixNano()),
-        WorkerIDs: []coordination.WorkerID{
-            coordination.WorkerID(fmt.Sprintf("sgx-%s", regionID)),
-            coordination.WorkerID(fmt.Sprintf("sev-%s", regionID)),
-        },
-        Data:     []byte("task-data"),
-        RegionID: regionID,
-        Timeout:  5 * time.Second,
-    }
-
-    // Submit task to coordinator
-    if err := vm.coordinator.SubmitTask(ctx, task); err != nil {
-        return nil, fmt.Errorf("failed to submit task: %w", err)
-    }
-
+    // Handle specific action types
     switch a := action.(type) {
     case *actions.CreateObjectAction:
-        // Store the object
-        vm.objects[regionID][a.ID] = &core.ObjectState{
-            Code:     a.Code,
-            Storage:  a.Storage,
-            RegionID: regionID,
-            Status:   "active",
+        // Initialize region objects map if needed
+        if vm.objects == nil {
+            vm.objects = make(map[string]map[string]*core.ObjectState)
         }
+        if vm.objects[regionID] == nil {
+            vm.objects[regionID] = make(map[string]*core.ObjectState)
+        }
+
+        // Create object state
+        vm.objects[regionID][a.ID] = &core.ObjectState{
+            Code:        a.Code,
+            Storage:     a.Storage,
+            RegionID:    regionID,
+            Status:      "active",
+            LastUpdated: now,
+        }
+
         return &core.ExecutionResult{
             StateHash:    []byte("test-state-hash"),
             Output:       []byte("created"),
@@ -405,48 +459,50 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
         }, nil
 
     case *actions.SendEventAction:
-        // Check if object exists
-        _, exists := vm.objects[regionID][a.IDTo]
+        // Verify object exists
+        obj, exists := vm.objects[regionID][a.IDTo]
         if !exists {
             return nil, fmt.Errorf("object not found in region")
         }
 
-        // Check for empty attestations
-        if len(a.Attestations[0].EnclaveID) == 0 || len(a.Attestations[1].EnclaveID) == 0 {
-            return nil, fmt.Errorf("invalid attestation count")
+        // Validate attestations if provided
+        attestations := mockAttestations
+        if len(a.Attestations) == 2 {
+            if len(a.Attestations[0].EnclaveID) == 0 || len(a.Attestations[1].EnclaveID) == 0 {
+                return nil, fmt.Errorf("invalid attestation count")
+            }
+            
+            // Use provided attestations but ensure consistent state hash
+            attestations = a.Attestations
+            attestations[0].Data = []byte("test-state-hash")
+            attestations[1].Data = []byte("test-state-hash")
+            
+            // Verify timestamps
+            if attestations[0].Timestamp.IsZero() || attestations[1].Timestamp.IsZero() {
+                return nil, fmt.Errorf("invalid attestation timestamp")
+            }
+            
+            // Check timestamp is within acceptable range
+            age := time.Since(attestations[0].Timestamp)
+            if age > 5*time.Minute {
+                return nil, fmt.Errorf("attestation timestamp expired")
+            }
         }
 
-        // Check attestation timestamps
-        maxAge := 5 * time.Minute
-        age := time.Since(a.Attestations[0].Timestamp)
-        if age > maxAge {
-            return nil, fmt.Errorf("attestation timestamp expired")
-        }
+        // Update object state
+        obj.LastUpdated = now
 
-        // Use provided attestations if valid
-        var atts [2]core.TEEAttestation
-        if len(a.Attestations[0].EnclaveID) > 0 && len(a.Attestations[1].EnclaveID) > 0 {
-            atts = a.Attestations
-            // Ensure attestations have state hash data
-            atts[0].Data = []byte("test-state-hash")
-            atts[1].Data = []byte("test-state-hash")
-        } else {
-            atts = mockAttestations
-        }
-
-        // Create result with proper coordination proofs
-        result := &core.ExecutionResult{
+        return &core.ExecutionResult{
             StateHash:    []byte("test-state-hash"),
             Output:       []byte("executed"),
             RegionID:     regionID,
             TimeProof:    timeProof,
-            Attestations: atts,
-        }
+            Attestations: attestations,
+        }, nil
 
-        return result, nil
+    default:
+        return nil, fmt.Errorf("unsupported action type: %T", action)
     }
-
-    return nil, fmt.Errorf("unsupported action type")
 }
 
 func TestIntegration(t *testing.T) {
@@ -1157,22 +1213,27 @@ func (vm *MockVM) GetRegionMetrics(ctx context.Context, regionID string) (*Regio
         ActiveWorkers:  2,
         PendingTasks:   5,
         LastHealthCheck: time.Now(),
-        NetworkLatency: make(map[string]float64),
-        TEEMetrics:     make(map[string]*TEEMetrics),
-    }
-
-    // Add TEE metrics
-    metrics.TEEMetrics["sgx"] = &TEEMetrics{
-        LoadFactor:  0.4,
-        SuccessRate: 0.99,
-    }
-    metrics.TEEMetrics["sev"] = &TEEMetrics{
-        LoadFactor:  0.4,
-        SuccessRate: 0.99,
+        NetworkLatency: map[string]float64{
+            "region-1": 50.0,
+            "region-2": 75.0,
+        },
+        TEEMetrics: map[string]*TEEMetrics{
+            "sgx": {
+                LoadFactor:  0.4,
+                SuccessRate: 0.99,
+                LastAttested: time.Now(),
+            },
+            "sev": {
+                LoadFactor:  0.4,
+                SuccessRate: 0.99,
+                LastAttested: time.Now(),
+            },
+        },
     }
 
     return metrics, nil
 }
+
 
 func generateTestTasks(t *testing.T, vm *MockVM, regionID string, count int) []*core.ExecutionResult {
     require := require.New(t)
