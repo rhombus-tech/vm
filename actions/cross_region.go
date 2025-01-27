@@ -8,9 +8,11 @@ import (
 	"sort"
 	"time"
 
+	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/hypersdk/chain"
 	"github.com/ava-labs/hypersdk/codec"
 	"github.com/ava-labs/hypersdk/state"
+	"github.com/rhombus-tech/vm/consts"
 	"github.com/rhombus-tech/vm/coordination/xregion"
 )
 
@@ -19,13 +21,27 @@ var (
 	ErrInvalidTimeWindow   = errors.New("invalid time window")
 	ErrEmptyStateChanges   = errors.New("empty state changes")
 	ErrInvalidStateChanges = errors.New("invalid state changes")
+	ErrInvalidSignature    = errors.New("invalid signature")
+	ErrMissingSignature    = errors.New("missing required signature")
 )
 
 type CrossRegionAction struct {
 	Intent *xregion.CrossRegionIntent `json:"intent"`
 }
 
-func (a *CrossRegionAction) Execute(ctx context.Context, r chain.Rules, mu state.Mutable) (*chain.Result, error) {
+func (a *CrossRegionAction) Execute(
+	ctx context.Context,
+	_ chain.Rules,
+	mu state.Mutable,
+	_ int64,
+	actor codec.Address,
+	_ ids.ID,
+) (codec.Typed, error) {
+	// Validate the action
+	if err := a.ValidateBasic(); err != nil {
+		return nil, err
+	}
+
 	// Get required range proofs
 	ranges := a.getRequiredRanges()
 	proofs := make(map[string]*xregion.RangeResponse)
@@ -42,6 +58,10 @@ func (a *CrossRegionAction) Execute(ctx context.Context, r chain.Rules, mu state
 
 	// Verify all state changes are covered by proofs
 	for regionID, changes := range a.Intent.StateChanges {
+		if len(changes) == 0 {
+			continue
+		}
+		
 		proof, exists := proofs[regionID]
 		if !exists {
 			return nil, fmt.Errorf("missing proof for region %s", regionID)
@@ -49,31 +69,94 @@ func (a *CrossRegionAction) Execute(ctx context.Context, r chain.Rules, mu state
 
 		// Verify each state change is in the proof
 		for _, change := range changes {
-			if _, exists := proof.Proof.Entries[string(change.Key)]; !exists {
-				return nil, fmt.Errorf("state change key %x not in proof for region %s", change.Key, regionID)
+			exists := false
+			for key := range proof.Proof.Entries {
+				if bytes.Equal([]byte(key), change.Key) {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				return nil, fmt.Errorf("state change not covered by proof for region %s", regionID)
 			}
 		}
 	}
 
 	// Apply state changes
 	for _, changes := range a.Intent.StateChanges {
+		if len(changes) == 0 {
+			continue
+		}
+		
 		for _, change := range changes {
+			key := string(change.Key)
 			switch change.Operation {
 			case xregion.StateOpSet:
-				if err := mu.Insert(ctx, change.Key, change.Value); err != nil {
-					return nil, fmt.Errorf("failed to apply state change: %w", err)
+				if err := mu.Insert(ctx, []byte(key), change.Value); err != nil {
+					return nil, fmt.Errorf("failed to set state: %w", err)
 				}
-			case xregion.StateOpDelete:
-				if err := mu.Remove(ctx, change.Key); err != nil {
-					return nil, fmt.Errorf("failed to apply state change: %w", err)
+			case xregion.StateOpTransferOut:
+				if err := mu.Remove(ctx, []byte(key)); err != nil {
+					return nil, fmt.Errorf("failed to remove state: %w", err)
 				}
-			default:
-				return nil, fmt.Errorf("unsupported operation: %v", change.Operation)
 			}
 		}
 	}
 
-	return &chain.Result{Success: true}, nil
+	return &CrossRegionResult{
+		Success: true,
+	}, nil
+}
+
+func (a *CrossRegionAction) ValidateBasic() error {
+	if a.Intent == nil {
+		return ErrNilIntent
+	}
+
+	// Check time window
+	if a.Intent.TimeWindow.Duration <= 0 {
+		return ErrInvalidTimeWindow
+	}
+
+	// Check state changes
+	if len(a.Intent.StateChanges) == 0 {
+		return ErrEmptyStateChanges
+	}
+
+	// Validate state changes
+	if err := a.Intent.ValidateStateChanges(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidStateChanges, err)
+	}
+
+	// Verify required signatures
+	if err := a.verifySignatures(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (a *CrossRegionAction) verifySignatures() error {
+	// Source region must sign
+	if _, ok := a.Intent.Signatures[a.Intent.SourceRegion]; !ok {
+		return fmt.Errorf("%w: missing source region signature", ErrMissingSignature)
+	}
+
+	// All target regions must sign
+	for _, region := range a.Intent.TargetRegions {
+		if _, ok := a.Intent.Signatures[region]; !ok {
+			return fmt.Errorf("%w: missing target region signature", ErrMissingSignature)
+		}
+	}
+
+	// Verify each signature
+	for region, sig := range a.Intent.Signatures {
+		if err := xregion.GetCoordinator().VerifySignature(region, a.Intent.ID, sig); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
+		}
+	}
+
+	return nil
 }
 
 func (a *CrossRegionAction) Marshal(p *codec.Packer) error {
@@ -91,9 +174,6 @@ func (a *CrossRegionAction) Marshal(p *codec.Packer) error {
 
 	// Marshal timestamps
 	p.PackInt64(int64(a.Intent.TimeWindow.Duration))
-
-	// Marshal status
-	p.PackInt(uint32(a.Intent.Status))
 
 	// Marshal state changes
 	p.PackInt(uint32(len(a.Intent.StateChanges)))
@@ -138,10 +218,7 @@ func (a *CrossRegionAction) Unmarshal(p *codec.Packer) error {
 	// Unmarshal timestamps
 	duration := p.UnpackInt64(true)
 	a.Intent.TimeWindow.Duration = time.Duration(duration)
-
-	// Unmarshal status
-	status := p.UnpackInt(true)
-	a.Intent.Status = xregion.IntentStatus(status)
+	a.Intent.TimeWindow.Start = time.Now() // Set current time as start
 
 	// Unmarshal state changes
 	numRegionChanges := p.UnpackInt(true)
@@ -174,91 +251,71 @@ func (a *CrossRegionAction) Unmarshal(p *codec.Packer) error {
 	return p.Err()
 }
 
-func (a *CrossRegionAction) ValidateBasic() error {
-	if a.Intent == nil {
-		return ErrNilIntent
-	}
-
-	// Check time window
-	if a.Intent.TimeWindow.Duration <= 0 {
-		return ErrInvalidTimeWindow
-	}
-
-	// Check state changes
-	if len(a.Intent.StateChanges) == 0 {
-		return ErrEmptyStateChanges
-	}
-
-	// Validate state changes
-	if err := a.Intent.ValidateStateChanges(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidStateChanges, err)
-	}
-
-	return nil
-}
-
 func (a *CrossRegionAction) GetTypeID() uint8 {
-	return 0x01 // Unique type ID for cross-region actions
+	return consts.CrossRegionID
 }
 
 func (a *CrossRegionAction) ComputeUnits(r chain.Rules) uint64 {
-	// Base cost
-	units := uint64(1000)
-
-	// Add cost per state change
+	// Base cost plus additional cost per state change
+	baseCost := uint64(1000)
+	stateChangeCost := uint64(100)
+	
+	totalChanges := uint64(0)
 	for _, changes := range a.Intent.StateChanges {
-		units += uint64(len(changes)) * 100
+		totalChanges += uint64(len(changes))
 	}
-
-	// Add cost per target region
-	units += uint64(len(a.Intent.TargetRegions)) * 500
-
-	return units
+	
+	return baseCost + (stateChangeCost * totalChanges)
 }
 
 func (a *CrossRegionAction) ValidRange(r chain.Rules) (int64, int64) {
+	if a.Intent == nil {
+		return time.Now().Unix(), time.Now().Add(5 * time.Minute).Unix()
+	}
 	return a.Intent.TimeWindow.Start.Unix(), a.Intent.TimeWindow.End().Unix()
 }
 
 func (a *CrossRegionAction) StateKeys(actor codec.Address) state.Keys {
-    keys := make(state.Keys)
-    for _, changes := range a.Intent.StateChanges {
-        for _, change := range changes {
-            keys[string(change.Key)] = state.Permissions(state.All) // Convert to Permissions type
-        }
-    }
-    return keys
+	keys := make(state.Keys)
+	
+	// Add all state changes to the keys
+	for _, changes := range a.Intent.StateChanges {
+		for _, change := range changes {
+			key := string(change.Key)
+			switch change.Operation {
+			case xregion.StateOpSet:
+				keys[key] = state.Write
+			case xregion.StateOpTransferOut:
+				keys[key] = state.Write
+			}
+		}
+	}
+	
+	return keys
 }
 
 // getRequiredRanges determines which ranges need to be requested for state verification
 func (a *CrossRegionAction) getRequiredRanges() []xregion.RangeRequest {
-	// Group changes by region
-	rangesByRegion := make(map[string]xregion.RangeRequest)
+	var ranges []xregion.RangeRequest
+
+	// Group changes by region and key prefix
 	for regionID, changes := range a.Intent.StateChanges {
 		if len(changes) == 0 {
 			continue
 		}
-
-		// Sort changes by key to find range boundaries
-		sort.Slice(changes, func(i, j int) bool {
-			return bytes.Compare(changes[i].Key, changes[j].Key) < 0
-		})
-
-		// Create range request
-		rangesByRegion[regionID] = xregion.RangeRequest{
-			RegionID:   regionID,
-			StartKey:   changes[0].Key,
-			EndKey:     changes[len(changes)-1].Key,
-			TimeWindow: xregion.TimeWindow{
-				Duration: 60 * time.Second, // TODO: Make configurable
-			},
+		
+		keyRanges := groupChangesByPrefix(changes)
+		for _, r := range keyRanges {
+			ranges = append(ranges, xregion.RangeRequest{
+				StartKey:   r.Start,
+				EndKey:     r.End,
+				RegionID:   regionID,
+				TimeWindow: xregion.TimeWindow{
+					Start:    time.Now(),
+					Duration: 5 * time.Minute,
+				},
+			})
 		}
-	}
-
-	// Convert map to slice
-	ranges := make([]xregion.RangeRequest, 0, len(rangesByRegion))
-	for _, rng := range rangesByRegion {
-		ranges = append(ranges, rng)
 	}
 
 	return ranges
@@ -275,21 +332,35 @@ func groupChangesByPrefix(changes []xregion.StateChange) []struct{ Start, End []
 		return bytes.Compare(changes[i].Key, changes[j].Key) < 0
 	})
 
-	// Group changes with similar prefixes
 	var ranges []struct{ Start, End []byte }
-	start := changes[0].Key
-	prev := changes[0].Key
+	currentRange := struct{ Start, End []byte }{
+		Start: changes[0].Key,
+		End:   changes[0].Key,
+	}
 
 	for i := 1; i < len(changes); i++ {
-		curr := changes[i].Key
-		// If keys are too far apart, start a new range
-		if !bytes.HasPrefix(curr, prev[:len(prev)/2]) {
-			ranges = append(ranges, struct{ Start, End []byte }{start, prev})
-			start = curr
+		// If keys are contiguous, extend current range
+		if bytes.Equal(changes[i].Key[:8], currentRange.End[:8]) {
+			currentRange.End = changes[i].Key
+			continue
 		}
-		prev = curr
-	}
-	ranges = append(ranges, struct{ Start, End []byte }{start, prev})
 
+		// Start new range
+		ranges = append(ranges, currentRange)
+		currentRange = struct{ Start, End []byte }{
+			Start: changes[i].Key,
+			End:   changes[i].Key,
+		}
+	}
+
+	ranges = append(ranges, currentRange)
 	return ranges
+}
+
+type CrossRegionResult struct {
+	Success bool `serialize:"true" json:"success"`
+}
+
+func (*CrossRegionResult) GetTypeID() uint8 {
+	return consts.CrossRegionResultID
 }

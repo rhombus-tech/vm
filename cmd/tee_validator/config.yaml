@@ -1,0 +1,8 @@
+validator:
+  regions:
+    - id: "region1"
+      sgx: "localhost:50051"
+      sev: "localhost:50052"
+    - id: "region2"
+      sgx: "localhost:50053"
+      sev: "localhost:50054"

@@ -8,6 +8,7 @@ import (
 )
 
 const (
+    // General constants
     HRP      = "morpheus"
     Name     = "morpheusvm"
     Symbol   = "RED"
@@ -18,16 +19,45 @@ const (
     MaxStorageSize = 1024 * 1024    // 1MB
     MaxIDLength    = 256
 
-    // TEE constants
-    TEETypeSGX uint8 = 1
-    TEETypeSEV uint8 = 2
-
     // Time window constants
     MaxTimeDrift = 5 * 60  // 5 minutes in seconds
     MinTimeDrift = -5 * 60 // 5 minutes in seconds
 
     // Attestation limits 
     MaxAttestationSize = 1024  // Maximum size of TEE attestation in bytes
+
+    // TEE constants
+    TEETypeSGX uint8 = 1
+    TEETypeSEV uint8 = 2
+)
+
+// TEE platform types
+const (
+    TEEPlatformSGX uint8 = iota
+    TEEPlatformSEV
+)
+
+// Action type IDs
+const (
+    TransferID                   uint8 = iota
+    ContractVerificationID       
+    ContractVerificationResultID 
+    CreateObjectID              
+    SetInputObjectID            
+    SendEventID                
+    CreateRegionID             
+    UpdateRegionID             
+    CreateObjectResultID       
+    SetInputObjectResultID     
+    SendEventResultID         
+    CreateRegionResultID      
+    UpdateRegionResultID      
+    ExecutionResultID         
+    AttestationReportID      
+    UpdateValidEnclavesID    
+    UpdateValidEnclavesResultID 
+    CrossRegionID            
+    CrossRegionResultID      
 )
 
 var ID ids.ID

@@ -1,0 +1,8 @@
+validator:
+  regions:
+    - id: "asia-1"
+      sgx: "sgx1:8080"
+      sev: "sev1:8080"
+    - id: "europe-1"
+      sgx: "sgx2:8080"
+      sev: "sev2:8080"

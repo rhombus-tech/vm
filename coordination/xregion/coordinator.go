@@ -112,3 +112,20 @@ func (c *Coordinator) signResponse(resp *RangeResponse) ([]byte, error) {
 	// TODO: Implement response signing
 	return []byte{}, nil
 }
+
+// VerifySignature verifies a signature from a region
+func (c *Coordinator) VerifySignature(regionID string, intentID string, signature []byte) error {
+	// TODO: Implement proper signature verification
+	// For now, just do basic validation
+	if len(signature) == 0 {
+		return fmt.Errorf("empty signature")
+	}
+	return nil
+}
+
+// Sign signs data for this region
+func (c *Coordinator) Sign(data []byte) ([]byte, error) {
+	// TODO: Implement proper signing
+	// For now, just return dummy signature
+	return []byte{0x1}, nil
+}
