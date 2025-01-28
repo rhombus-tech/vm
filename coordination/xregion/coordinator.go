@@ -4,13 +4,15 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/rhombus-tech/vm/coordination/state"
 )
 
 var (
 	globalCoordinator *Coordinator
-	initOnce         sync.Once
+	initOnce          sync.Once
 )
 
 // Coordinator handles cross-region state synchronization
@@ -128,4 +130,71 @@ func (c *Coordinator) Sign(data []byte) ([]byte, error) {
 	// TODO: Implement proper signing
 	// For now, just return dummy signature
 	return []byte{0x1}, nil
+}
+
+// ConfirmIntent confirms a cross-region intent with a specific region
+func (c *Coordinator) ConfirmIntent(ctx context.Context, intentID string, region string, signature []byte) error {
+	if err := c.VerifySignature(region, intentID, signature); err != nil {
+		return fmt.Errorf("invalid signature from region %s: %w", region, err)
+	}
+
+	// TODO: Implement actual confirmation logic
+	return nil
+}
+
+// RegionProcessor handles parallel processing of cross-region operations
+type RegionProcessor struct {
+	maxConcurrent int64
+	coordinator   *Coordinator
+}
+
+// NewRegionProcessor creates a new RegionProcessor instance
+func NewRegionProcessor(maxConcurrent int64, coordinator *Coordinator) (*RegionProcessor, error) {
+	if maxConcurrent <= 0 {
+		return nil, fmt.Errorf("maxConcurrent must be positive")
+	}
+	if coordinator == nil {
+		return nil, fmt.Errorf("coordinator cannot be nil")
+	}
+	return &RegionProcessor{
+		maxConcurrent: maxConcurrent,
+		coordinator:   coordinator,
+	}, nil
+}
+
+// ProcessRegions processes a set of regions in parallel with controlled concurrency
+func (rp *RegionProcessor) ProcessRegions(ctx context.Context, intent string, regions []string, signature []byte) error {
+	if ctx == nil {
+		return fmt.Errorf("context cannot be nil")
+	}
+	if len(regions) == 0 {
+		return nil
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	limiter := semaphore.NewWeighted(rp.maxConcurrent)
+
+	for _, region := range regions {
+		region := region
+		
+		if err := limiter.Acquire(ctx, 1); err != nil {
+			return fmt.Errorf("failed to acquire semaphore: %w", err)
+		}
+
+		g.Go(func() error {
+			defer limiter.Release(1)
+			
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+				if err := rp.coordinator.ConfirmIntent(ctx, intent, region, signature); err != nil {
+					return fmt.Errorf("region %s failed: %w", region, err)
+				}
+				return nil
+			}
+		})
+	}
+
+	return g.Wait()
 }

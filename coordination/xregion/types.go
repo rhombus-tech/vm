@@ -7,6 +7,11 @@ import (
 	"github.com/rhombus-tech/vm/coordination/state"
 )
 
+// Now returns the current time
+func Now() time.Time {
+	return time.Now().UTC()
+}
+
 // CrossRegionIntent represents a cross-region transaction intent
 type CrossRegionIntent struct {
 	ID            string

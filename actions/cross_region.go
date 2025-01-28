@@ -42,18 +42,44 @@ func (a *CrossRegionAction) Execute(
 		return nil, err
 	}
 
+	coordinator := xregion.GetCoordinator()
+	
+	// Create RegionProcessor with reasonable concurrency limit
+	processor, err := xregion.NewRegionProcessor(4, coordinator)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create region processor: %w", err)
+	}
+
 	// Get required range proofs
 	ranges := a.getRequiredRanges()
 	proofs := make(map[string]*xregion.RangeResponse)
 
 	// Request proofs for all required ranges
 	for _, rng := range ranges {
-		resp, err := xregion.GetCoordinator().RequestRangeProof(ctx, &rng)
+		resp, err := coordinator.RequestRangeProof(ctx, &rng)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get range proof: %w", err)
 		}
 
 		proofs[rng.RegionID] = resp
+	}
+
+	// Get list of regions that need confirmation
+	var regions []string
+	for regionID := range a.Intent.StateChanges {
+		if len(a.Intent.StateChanges[regionID]) > 0 {
+			regions = append(regions, regionID)
+		}
+	}
+
+	// Process regions in parallel
+	signature, err := coordinator.Sign([]byte(a.Intent.ID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign intent: %w", err)
+	}
+
+	if err := processor.ProcessRegions(ctx, a.Intent.ID, regions, signature); err != nil {
+		return nil, fmt.Errorf("failed to process regions: %w", err)
 	}
 
 	// Verify all state changes are covered by proofs
@@ -103,9 +129,7 @@ func (a *CrossRegionAction) Execute(
 		}
 	}
 
-	return &CrossRegionResult{
-		Success: true,
-	}, nil
+	return &CrossRegionResult{Success: true}, nil
 }
 
 func (a *CrossRegionAction) ValidateBasic() error {
