@@ -8,37 +8,138 @@ import (
 )
 
 type Worker struct {
-    ID        WorkerID              `json:"id"`
-    EnclaveID []byte               `json:"enclaveID"`
-    Status    WorkerStatus         `json:"status"`
-    Channels  map[WorkerID]*SecureChannel `json:"channels"`
-    LastActive time.Time
-    msgCh     chan *Message        // Unexported channels
-    doneCh    chan struct{}
-    coord     *Coordinator
-    mu        sync.RWMutex
+    ID         WorkerID                    `json:"id"`
+    EnclaveID  []byte                     `json:"enclaveID"`
+    Status     WorkerStatus               `json:"status"`
+    Type       string                     `json:"type"`      // Add TEE type: "SGX" or "SEV"
+    RegionID   string                     `json:"regionID"`  // Add region assignment
+    Channels   map[WorkerID]*SecureChannel `json:"channels"`
+    LastActive time.Time                   `json:"lastActive"`
+    
+    // Metrics and monitoring
+    TaskCount        uint64    `json:"taskCount"`
+    SuccessCount     uint64    `json:"successCount"`
+    ErrorCount       uint64    `json:"errorCount"`
+    LoadFactor       float64   `json:"loadFactor"`
+    
+    // Unexported fields
+    msgCh           chan *Message
+    doneCh          chan struct{}
+    coord           *Coordinator
+    mu              sync.RWMutex
 }
 
-func NewWorker(id WorkerID, enclaveID []byte, coordinator *Coordinator) *Worker {
+
+func NewWorker(id WorkerID, enclaveID []byte, workerType string, coord *Coordinator) *Worker {
     return &Worker{
         ID:         id,
         EnclaveID:  enclaveID,
         Status:     WorkerStatusIdle,
-        LastActive: time.Now(),
+        Type:       workerType,
         Channels:   make(map[WorkerID]*SecureChannel),
-        msgCh:      make(chan *Message, 100), // Buffer size of 100
-        doneCh:     make(chan struct{}),
+        LastActive: time.Now(),
+        
+        // Initialize metrics
+        TaskCount:    0,
+        SuccessCount: 0,
+        ErrorCount:   0,
+        LoadFactor:   0.0,
+        
+        // Initialize channels
+        msgCh:        make(chan *Message, 100),
+        doneCh:       make(chan struct{}),
+        coord:        coord,
     }
 }
 
-func (w *Worker) Start() error {
+// Add methods to handle metrics
+func (w *Worker) UpdateMetrics(success bool) {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    
+    w.TaskCount++
+    if success {
+        w.SuccessCount++
+    } else {
+        w.ErrorCount++
+    }
+    
+    // Update load factor (simple calculation, can be made more sophisticated)
+    w.LoadFactor = float64(w.TaskCount-w.SuccessCount) / float64(w.TaskCount)
+    w.LastActive = time.Now()
+}
+
+// Add method to check if worker can accept new tasks
+func (w *Worker) CanAcceptTask() bool {
+    w.mu.RLock()
+    defer w.mu.RUnlock()
+    
+    return w.Status == WorkerStatusActive && 
+           w.LoadFactor < 0.8 && // Arbitrary threshold
+           w.RegionID != ""
+}
+
+// Add method to assign worker to region
+func (w *Worker) AssignToRegion(regionID string) {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    
+    w.RegionID = regionID
     w.Status = WorkerStatusActive
     w.LastActive = time.Now()
+}
+
+// Add method to unassign worker from region
+func (w *Worker) UnassignFromRegion() {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    
+    w.RegionID = ""
+    w.Status = WorkerStatusIdle
+}
+
+// Add method to get worker metrics
+func (w *Worker) GetMetrics() map[string]interface{} {
+    w.mu.RLock()
+    defer w.mu.RUnlock()
+    
+    return map[string]interface{}{
+        "taskCount":    w.TaskCount,
+        "successCount": w.SuccessCount,
+        "errorCount":   w.ErrorCount,
+        "loadFactor":   w.LoadFactor,
+        "lastActive":   w.LastActive,
+        "status":       w.Status,
+        "regionID":     w.RegionID,
+        "type":         w.Type,
+    }
+}
+
+
+func (w *Worker) Start() error {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    
+    w.Status = WorkerStatusActive
+    w.LastActive = time.Now()
+    
+    // Start message processing
+    go w.processMessages()
+    
     return nil
 }
 
+
 func (w *Worker) Stop() error {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+    
     w.Status = WorkerStatusIdle
+    close(w.doneCh)
+    
+    // Clear region assignment
+    w.RegionID = ""
+    
     return nil
 }
 

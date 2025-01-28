@@ -12,4 +12,6 @@ var (
     ErrStorageError      = errors.New("storage error")
     ErrBatchError        = errors.New("batch operation error")
     ErrRegionNotFound = errors.New("region not found")
+    ErrInvalidRegionID = errors.New("invalid region ID")
+    ErrRegionExists    = errors.New("region already exists")
 )

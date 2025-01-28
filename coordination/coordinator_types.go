@@ -65,9 +65,33 @@ type TEEPairMetrics struct {
 
 
 type Region struct {
-    ID         string     
-    Workers    [2]WorkerID
-    CreatedAt  time.Time  
+    ID        string     `json:"id"`
+    Workers   [2]WorkerID `json:"workers"`
+    CreatedAt time.Time  `json:"created_at"`
+    Status    string     `json:"status"`
+    Meta      RegionMetadata `json:"meta"`
+}
+
+type RegionMetadata struct {
+    MaxObjects int `json:"max_objects"`
+    MaxEvents  int `json:"max_events"`
+}
+
+type RegionMetrics struct {
+    LoadFactor      float64                `json:"load_factor"`
+    LatencyMs       float64                `json:"latency_ms"`
+    ErrorRate       float64                `json:"error_rate"`
+    ActiveWorkers   int                    `json:"active_workers"`
+    PendingTasks    int                    `json:"pending_tasks"`
+    LastHealthCheck time.Time              `json:"last_health_check"`
+    TEEMetrics      map[string]*TEEMetrics `json:"tee_metrics"`
+}
+
+
+type TEEMetrics struct {
+    LoadFactor  float64   `json:"load_factor"`
+    SuccessRate float64   `json:"success_rate"`
+    Status      string    `json:"status"`
 }
 
 type Attestation struct {

@@ -26,6 +26,9 @@ type Config struct {
     // Storage settings
     StoragePath         string
     PersistenceEnabled  bool
+
+     MaxObjects          int           `json:"max_objects"`
+    MaxEvents          int           `json:"max_events"`
 }
 
 

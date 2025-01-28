@@ -47,8 +47,9 @@ type Coordinator struct {
     cancel     context.CancelFunc
 
     // TEE and region management
-    teePairs    map[string][]TEEPairInfo
-    regionLock  sync.RWMutex
+    teePairs      map[string][]TEEPairInfo
+    regionMetrics map[string]*RegionMetrics  // Add this field
+    regionLock    sync.RWMutex
 }
 
 
@@ -70,6 +71,7 @@ func NewCoordinator(config *Config, db merkledb.MerkleDB, store BaseStorage) (*C
         ctx:        ctx,
         cancel:     cancel,
         teePairs:   make(map[string][]TEEPairInfo),
+        regionMetrics: make(map[string]*RegionMetrics),
     }, nil
 }
 
@@ -446,23 +448,117 @@ func (c *Coordinator) RegisterRegion(ctx context.Context, regionID string, teeWo
     c.regionLock.Lock()
     defer c.regionLock.Unlock()
 
-    // Verify workers exist
-    for _, workerID := range teeWorkers {
-        if _, exists := c.workers[workerID]; !exists {
+    // Validate region ID
+    if regionID == "" {
+        return ErrInvalidRegionID
+    }
+
+    // Check if region already exists
+    existing, err := c.store.LoadRegion(ctx, regionID)
+    if err != nil && !errors.Is(err, storage.ErrNotFound) {
+        return fmt.Errorf("failed to check existing region: %w", err)
+    }
+    if existing != nil {
+        return ErrRegionExists
+    }
+
+    // Verify both TEE workers are provided
+    if len(teeWorkers) != 2 {
+        return fmt.Errorf("exactly 2 TEE workers required, got %d", len(teeWorkers))
+    }
+
+    // Verify workers exist and are valid
+    for i, workerID := range teeWorkers {
+        worker, exists := c.workers[workerID]
+        if !exists {
             return fmt.Errorf("worker %s not found", workerID)
+        }
+
+        // Verify worker is not already assigned to another region
+        if worker.RegionID != "" && worker.RegionID != regionID {
+            return fmt.Errorf("worker %s already assigned to region %s", workerID, worker.RegionID)
+        }
+
+        // Verify worker types (SGX should be first, SEV second)
+        if i == 0 && worker.Type != "SGX" {
+            return fmt.Errorf("first worker must be SGX type, got %s", worker.Type)
+        }
+        if i == 1 && worker.Type != "SEV" {
+            return fmt.Errorf("second worker must be SEV type, got %s", worker.Type)
         }
     }
 
-    // Create region record
+    // Create region record with additional fields
     region := &Region{
         ID:        regionID,
         Workers:   teeWorkers,
         CreatedAt: time.Now().UTC(),
+        Status:    "active",
+        Meta: RegionMetadata{
+            MaxObjects: c.config.MaxObjects,
+            MaxEvents:  c.config.MaxEvents,
+        },
+    }
+
+    // Establish secure channel between workers
+    channel, err := c.GetSecureChannel(ctx, teeWorkers[0], teeWorkers[1])
+    if err != nil {
+        return fmt.Errorf("failed to establish secure channel: %w", err)
+    }
+
+    // Create TEE pair info
+    pairInfo := TEEPairInfo{
+        ID:        fmt.Sprintf("%s-%s", teeWorkers[0], teeWorkers[1]),
+        SGXWorker: teeWorkers[0],
+        SEVWorker: teeWorkers[1],
+        Channel:   channel,
+        LastUsed:  time.Now(),
+    }
+
+    // Update worker assignments
+    for _, workerID := range teeWorkers {
+        c.workers[workerID].RegionID = regionID
+        c.workers[workerID].Status = WorkerStatusActive
     }
 
     // Save to storage
     if err := c.store.SaveRegion(ctx, region); err != nil {
+        // Cleanup on failure
+        for _, workerID := range teeWorkers {
+            c.workers[workerID].RegionID = ""
+            c.workers[workerID].Status = WorkerStatusIdle
+        }
         return fmt.Errorf("failed to save region: %w", err)
+    }
+
+    // Add to TEE pairs map
+    if c.teePairs[regionID] == nil {
+        c.teePairs[regionID] = make([]TEEPairInfo, 0)
+    }
+    c.teePairs[regionID] = append(c.teePairs[regionID], pairInfo)
+
+    // Initialize region metrics
+    if c.regionMetrics[regionID] == nil {
+        c.regionMetrics[regionID] = &RegionMetrics{
+            LoadFactor:      0.0,
+            LatencyMs:       0.0,
+            ErrorRate:       0.0,
+            ActiveWorkers:   2,
+            PendingTasks:    0,
+            LastHealthCheck: time.Now(),
+            TEEMetrics: map[string]*TEEMetrics{
+                "sgx": {
+                    LoadFactor:  0.0,
+                    SuccessRate: 1.0,
+                    Status:      "healthy",
+                },
+                "sev": {
+                    LoadFactor:  0.0,
+                    SuccessRate: 1.0,
+                    Status:      "healthy",
+                },
+            },
+        }
     }
 
     return nil
@@ -507,6 +603,7 @@ func (c *Coordinator) ValidateRegionalOperation(ctx context.Context, regionID st
 
     return nil
 }
+
 // Channel Management
 func (c *Coordinator) GetSecureChannel(ctx context.Context, worker1, worker2 WorkerID) (*SecureChannel, error) {
     // First try to load existing channel
