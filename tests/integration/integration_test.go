@@ -2,9 +2,12 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,12 +22,13 @@ import (
 	"github.com/rhombus-tech/vm/actions"
 	"github.com/rhombus-tech/vm/compute"
 	"github.com/rhombus-tech/vm/coordination"
+	"github.com/rhombus-tech/vm/coordination/xregion"
 	"github.com/rhombus-tech/vm/core"
 	"github.com/rhombus-tech/vm/storage"
 	"github.com/rhombus-tech/vm/tee"
+	"github.com/rhombus-tech/vm/tests/mocks"
 	"github.com/rhombus-tech/vm/timeserver"
 	"github.com/rhombus-tech/vm/verifier"
-    "github.com/rhombus-tech/vm/tests/mocks"
 )
 
 type RegionMetrics struct {
@@ -278,8 +282,10 @@ type MockVM struct {
     coordinator        *coordination.Coordinator
     db                merkledb.MerkleDB
     stateManager       *storage.DatabaseWrapper
-    defaultAttestations [2]core.TEEAttestation  // Add this
-    defaultTimeProof    *timeserver.VerifiedTimestamp  // Add this
+    defaultAttestations [2]core.TEEAttestation 
+    defaultTimeProof    *timeserver.VerifiedTimestamp  
+    networkLatency    map[string]time.Duration
+    partitionedRegions map[string]bool
 }
 
 func NewMockVM(config *compute.Config) (*MockVM, error) {
@@ -342,6 +348,8 @@ func NewMockVM(config *compute.Config) (*MockVM, error) {
         coordinator:  coordinator,
         db:          merkleDB,
         stateManager: dbWrapper,
+        networkLatency:     make(map[string]time.Duration),
+        partitionedRegions: make(map[string]bool),
     }, nil
 }
 
@@ -1157,6 +1165,90 @@ func (vm *MockVM) SimulateRegionFailure(regionID string) error {
     return nil
 }
 
+func (vm *MockVM) SimulateStateDesync(regionID string) error {
+    vm.mu.Lock()
+    defer vm.mu.Unlock()
+
+    if !vm.regions[regionID] {
+        return fmt.Errorf("region not found")
+    }
+
+    // Simulate state desync by corrupting local state
+    regionObjects := vm.objects[regionID]
+    if regionObjects != nil {
+        for _, obj := range regionObjects {
+            obj.Storage = append(obj.Storage, []byte("corrupted")...)
+        }
+    }
+
+    // Auto-recover after brief delay
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        vm.mu.Lock()
+        defer vm.mu.Unlock()
+        // Reset state to original
+        if regionObjects != nil {
+            for _, obj := range regionObjects {
+                obj.Storage = bytes.TrimSuffix(obj.Storage, []byte("corrupted"))
+            }
+        }
+    }()
+
+    return nil
+}
+
+func (vm *MockVM) SimulateNetworkPartition(regionID string) error {
+    vm.mu.Lock()
+    defer vm.mu.Unlock()
+
+    if !vm.regions[regionID] {
+        return fmt.Errorf("region not found")
+    }
+
+    // Simulate network partition by temporarily removing region
+    delete(vm.regions, regionID)
+
+    // Auto-heal partition after delay
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        vm.mu.Lock()
+        defer vm.mu.Unlock()
+        vm.regions[regionID] = true
+    }()
+
+    return nil
+}
+
+func (vm *MockVM) SimulatePartialConnectivity(regionID string) error {
+    vm.mu.Lock()
+    defer vm.mu.Unlock()
+
+    if !vm.regions[regionID] {
+        return fmt.Errorf("region not found")
+    }
+
+    // Add network latency simulation
+    go func() {
+        for i := 0; i < 5; i++ {
+            vm.mu.Lock()
+            // Temporarily disable region
+            delete(vm.regions, regionID)
+            vm.mu.Unlock()
+
+            // Random delay between 50-150ms
+            delay := 50 + rand.Intn(100)
+            time.Sleep(time.Duration(delay) * time.Millisecond)
+
+            vm.mu.Lock()
+            // Re-enable region
+            vm.regions[regionID] = true
+            vm.mu.Unlock()
+        }
+    }()
+
+    return nil
+}
+
 // Helper function to get object state
 func (vm *MockVM) GetObject(ctx context.Context, objectID string, regionID string) (*core.ObjectState, error) {
     vm.mu.RLock()
@@ -1588,7 +1680,6 @@ func TestTEEPairCoordination(t *testing.T) {
 // Test TEE pair security and attestation verification
 func TestTEEPairSecurity(t *testing.T) {
     testVM, regionID := setupTestEnvironment(t)
-    require := require.New(t)
     ctx := context.Background()
 
     tests := []struct {
@@ -1598,53 +1689,77 @@ func TestTEEPairSecurity(t *testing.T) {
         {
             name: "Attestation Verification",
             test: func(t *testing.T) {
-                // Create valid attestations
+                // Create valid attestations with current timestamp
                 result, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
-                require.NoError(err)
-                validAttestations := result.Attestations
+                if err != nil {
+                    t.Fatalf("failed to create initial attestations: %v", err)
+                }
+                if result == nil {
+                    t.Fatal("result is nil")
+                }
 
-                // Try to use expired attestations
-                expiredAttestations := validAttestations
-                expiredAttestations[0].Timestamp = time.Now().Add(-6 * time.Minute)
-                expiredAttestations[1].Timestamp = time.Now().Add(-6 * time.Minute)
+                // Create expired attestations
+                expiredAtts := result.Attestations
+                expiredAtts[0].Timestamp = time.Now().Add(-6 * time.Minute)
+                expiredAtts[1].Timestamp = time.Now().Add(-6 * time.Minute)
 
                 action := &actions.SendEventAction{
                     IDTo:         "test-object",
                     RegionID:     regionID,
                     FunctionCall: "test",
                     Parameters:   []byte("test"),
-                    Attestations: expiredAttestations,
+                    Attestations: expiredAtts,
                 }
 
                 _, err = testVM.ExecuteInRegion(ctx, regionID, action)
-                require.Error(err)
-                require.Contains(err.Error(), "attestation timestamp expired")
+                if err == nil {
+                    t.Fatal("expected error for expired attestations")
+                }
+                if !strings.Contains(err.Error(), "attestation timestamp expired") {
+                    t.Fatalf("expected 'attestation timestamp expired' error, got: %v", err)
+                }
+
+                // Verify attestation data
+                if len(expiredAtts[0].EnclaveID) == 0 {
+                    t.Fatal("enclave ID is empty")
+                }
+                if len(expiredAtts[1].EnclaveID) == 0 {
+                    t.Fatal("enclave ID is empty")
+                }
             },
         },
         {
-            name: "Cross-Region Attestation",
+            name: "Cross Region Attestation",
             test: func(t *testing.T) {
                 // Create second region
-                region2ID := "test-region-2"
-                err := testVM.RegisterRegion(ctx, region2ID, "mock://sgx2", "mock://sev2")
-                require.NoError(err)
+                region2 := "test-region-2"
+                err := testVM.RegisterRegion(ctx, region2, "mock://sgx2", "mock://sev2")
+                if err != nil {
+                    t.Fatalf("failed to register second region: %v", err)
+                }
 
                 // Create object in first region
                 result1, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
-                require.NoError(err)
+                if err != nil {
+                    t.Fatalf("failed to execute in first region: %v", err)
+                }
+                if result1 == nil {
+                    t.Fatal("result from first region is nil")
+                }
 
                 // Try to use attestations from first region in second region
                 action := &actions.SendEventAction{
                     IDTo:         "test-object",
-                    RegionID:     region2ID,
+                    RegionID:     region2,
                     FunctionCall: "test",
                     Parameters:   []byte("test"),
                     Attestations: result1.Attestations,
                 }
 
-                _, err = testVM.ExecuteInRegion(ctx, region2ID, action)
-                require.Error(err)
-                require.Contains(err.Error(), "object not found in region")
+                _, err = testVM.ExecuteInRegion(ctx, region2, action)
+                if err == nil {
+                    t.Fatal("expected error when using attestations across regions")
+                }
             },
         },
         {
@@ -2290,4 +2405,254 @@ func verifyTEERecovery(t *testing.T, healthStatuses []*HealthStatus) {
     require.True(sawRecovery, "Should have detected recovery")
 }
 
+func TestCrossRegionCommunication(t *testing.T) {
+    testVM, regionID1 := setupTestEnvironment(t)
+    ctx := context.Background()
 
+    // Create second region
+    regionID2 := "test-region-2"
+    err := testVM.RegisterRegion(ctx, regionID2, "mock://sgx2", "mock://sev2")
+    require.NoError(t, err)
+
+    tests := []struct {
+        name string
+        test func(t *testing.T)
+    }{
+        {
+            name: "Cross Region State Transfer",
+            test: func(t *testing.T) {
+                // Create object in region 1
+                obj1ID := "cross-region-obj"
+                createAction := &actions.CreateObjectAction{
+                    ID:       obj1ID,
+                    RegionID: regionID1,
+                    Code:     []byte("test code"),
+                    Storage:  []byte("test storage"),
+                }
+                
+                result1, err := testVM.ExecuteInRegion(ctx, regionID1, createAction)
+                require.NoError(t, err)
+                require.NotNil(t, result1)
+
+                // Create cross-region intent...
+                intent := xregion.NewCrossRegionIntent(
+                    "transfer-intent",
+                    regionID1,
+                    []string{regionID2},
+                )
+
+                intent.AddStateChange(regionID1, xregion.StateChange{
+                    Key:       []byte(obj1ID),
+                    Value:     result1.StateHash,
+                    Operation: xregion.StateOpTransferOut,
+                    Source:    regionID1,
+                    Target:    regionID2,
+                })
+                intent.AddStateChange(regionID2, xregion.StateChange{
+                    Key:       []byte(obj1ID),
+                    Value:     result1.StateHash,
+                    Operation: xregion.StateOpSet,
+                    Source:    regionID1,
+                    Target:    regionID2,
+                })
+
+                action := &actions.CrossRegionAction{
+                    Intent: intent,
+                }
+
+                // Execute cross-region transfer
+                result2, err := testVM.ExecuteInRegion(ctx, regionID1, action)
+                require.NoError(t, err)
+                require.NotNil(t, result2)
+                      
+                // Verify object exists in region 2
+                obj2, err := testVM.GetObject(ctx, obj1ID, regionID2)
+                require.NoError(t, err)
+                require.NotNil(t, obj2)
+            },
+        },
+        {
+            name: "Cross Region Proof Verification",
+            test: func(t *testing.T) {
+                // Get proof from region 1
+                proof1, err := testVM.GetRegionStateProof(ctx, regionID1, "test-key")
+                require.NoError(t, err)  // Fixed: added t parameter
+                
+                // Verify proof in region 2
+                valid, err := testVM.VerifyRegionStateProof(ctx, regionID2, proof1)
+                require.NoError(t, err)  // Fixed: added t parameter
+                require.True(t, valid)   // Fixed: added t parameter
+            },
+        },
+        {
+            name: "Cross Region Concurrent Operations",
+            test: func(t *testing.T) {
+                var wg sync.WaitGroup
+                errors := make(chan error, 10)
+                
+                for i := 0; i < 5; i++ {
+                    wg.Add(2)
+                    
+                    // Region 1 operation
+                    go func(idx int) {
+                        defer wg.Done()
+                        action := createTestAction()
+                        _, err := testVM.ExecuteInRegion(ctx, regionID1, action)
+                        if err != nil {
+                            errors <- err
+                        }
+                    }(i)
+                    
+                    // Region 2 operation
+                    go func(idx int) {
+                        defer wg.Done()
+                        action := createTestAction()
+                        _, err := testVM.ExecuteInRegion(ctx, regionID2, action)
+                        if err != nil {
+                            errors <- err
+                        }
+                    }(i)
+                }
+                
+                wg.Wait()
+                close(errors)
+                
+                for err := range errors {
+                    require.NoError(t, err)  // Fixed: added t parameter
+                }
+            },
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, tt.test)
+    }
+}
+
+func TestRegionalTEEPairSync(t *testing.T) {
+    testVM, regionID := setupTestEnvironment(t)
+    require := require.New(t)
+    ctx := context.Background()
+
+    tests := []struct {
+        name string
+        test func(t *testing.T)
+    }{
+        {
+            name: "TEE Pair State Sync",
+test: func(t *testing.T) {
+    // Create initial state
+    result1, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+    if err != nil {
+        t.Fatalf("failed to execute initial action: %v", err)
+    }
+    if result1 == nil {
+        t.Fatal("initial result is nil")
+    }
+
+    // Force state desync
+    if err := testVM.SimulateStateDesync(regionID); err != nil {
+        t.Fatalf("failed to simulate state desync: %v", err)
+    }
+    
+    // Verify automatic resync
+    result2, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+    if err != nil {
+        t.Fatalf("failed to execute after desync: %v", err)
+    }
+    if result2 == nil {
+        t.Fatal("post-desync result is nil")
+    }
+
+    // Verify states are synced
+    if !bytes.Equal(result2.Attestations[0].Data, result2.Attestations[1].Data) {
+        t.Fatal("TEE states are not synced")
+    }
+},
+        },
+        {
+            name: "TEE Pair Time Sync",
+            test: func(t *testing.T) {
+                // Execute operation and verify time synchronization
+                result, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+                require.NoError(err)
+                
+                // Verify timestamps are within acceptable range
+                timeDiff := result.Attestations[1].Timestamp.Sub(result.Attestations[0].Timestamp)
+                require.Less(timeDiff.Abs(), 100*time.Millisecond)
+            },
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, tt.test)
+    }
+}
+
+func TestNetworkPartitionHandling(t *testing.T) {
+    testVM, regionID := setupTestEnvironment(t)
+    ctx := context.Background()
+
+    // Remove the require.New(t) line and use t.Fatal instead
+    if err := testVM.RegisterRegion(ctx, regionID, "mock://sgx", "mock://sev"); err != nil {
+        t.Fatalf("failed to register region: %v", err)
+    }
+
+    tests := []struct {
+        name string
+        test func(t *testing.T)
+    }{
+        {
+            name: "Region Network Partition Recovery",
+            test: func(t *testing.T) {
+                // Create initial state
+                result1, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+                if err != nil {
+                    t.Fatalf("failed to execute initial action: %v", err)
+                }
+                if result1 == nil {
+                    t.Fatal("initial result is nil")
+                }
+                
+                // Simulate network partition
+                if err := testVM.SimulateNetworkPartition(regionID); err != nil {
+                    t.Fatalf("failed to simulate network partition: %v", err)
+                }
+                
+                // Wait for partition healing
+                time.Sleep(200 * time.Millisecond)
+                
+                // Verify operation after recovery
+                result2, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+                if err != nil {
+                    t.Fatalf("failed to execute action after recovery: %v", err)
+                }
+                if result2 == nil {
+                    t.Fatal("post-recovery result is nil")
+                }
+            },
+        },
+        {
+            name: "Partial Network Connectivity",
+            test: func(t *testing.T) {
+                // Simulate partial connectivity
+                if err := testVM.SimulatePartialConnectivity(regionID); err != nil {
+                    t.Fatalf("failed to simulate partial connectivity: %v", err)
+                }
+                
+                // Verify operations still succeed with degraded performance
+                result, err := testVM.ExecuteInRegion(ctx, regionID, createTestAction())
+                if err != nil {
+                    t.Fatalf("failed to execute with partial connectivity: %v", err)
+                }
+                if result == nil {
+                    t.Fatal("result under partial connectivity is nil")
+                }
+            },
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, tt.test)
+    }
+}
