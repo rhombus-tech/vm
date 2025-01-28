@@ -13,6 +13,15 @@ import (
 	"github.com/rhombus-tech/vm/coordination/xregion"
 )
 
+type HealthStatus struct {
+    Status         string        `json:"status"`
+    LastCheck      time.Time     `json:"last_check"`
+    ErrorCount     int           `json:"error_count"`
+    SuccessRate    float64       `json:"success_rate"`
+    LoadFactor     float64       `json:"load_factor"`
+    AverageLatency time.Duration `json:"average_latency"`
+}
+
 func TestCrossRegionalTransaction(t *testing.T) {
 	// Setup test environment with multiple regions
 	vm, err := NewMockVM(&compute.Config{
@@ -145,107 +154,120 @@ func TestCrossRegionalConsistency(t *testing.T) {
 }
 
 func TestCrossRegionalFailover(t *testing.T) {
-	// Setup test environment
-	vm, err := NewMockVM(&compute.Config{
-		MaxTasks: 100,
-		RegionConfig: &regions.RegionConfig{
-			MaxObjects: 1000,
-			MaxEvents:  1000,
-		},
-	})
-	require.NoError(t, err)
+    testVM, regionID := setupTestEnvironment(t)
+    ctx := context.Background()
 
-	ctx := context.Background()
+    // Create initial state
+    createAction := &actions.CreateObjectAction{
+        ID:       "failover-test",
+        RegionID: regionID,
+        Code:     []byte("test code"),
+        Storage:  []byte("test storage"),
+    }
 
-	// Register regions
-	for _, region := range []string{"region1", "region2", "region3"} {
-		err := vm.RegisterRegion(ctx, region, "mock-sgx:"+region, "mock-sev:"+region)
-		require.NoError(t, err)
-	}
+    result, err := testVM.ExecuteInRegion(ctx, regionID, createAction)
+    if err != nil {
+        t.Fatalf("failed to create initial state: %v", err)
+    }
+    if result == nil {
+        t.Fatal("initial result is nil")
+    }
 
-	// Start health monitoring
-	done := make(chan struct{})
-	healthChan := monitorTEEHealth(ctx, vm, "region1")
+    // Start health monitoring
+    healthChan := monitorRegionHealth(ctx, testVM, regionID)
+    
+    // Create done channel for cleanup
+    done := make(chan struct{})
+    defer close(done)
 
-	// Create cross-region intent
-	intent := xregion.NewCrossRegionIntent("test-intent", "region1", []string{"region2"})
-	intent.AddStateChange("region1", xregion.StateChange{
-		Key:       []byte("test-object"),
-		Value:     []byte("test-data"),
-		Operation: xregion.StateOpTransferOut,
-		Source:    "region1",
-		Target:    "region2",
-	})
-	intent.AddStateChange("region2", xregion.StateChange{
-		Key:       []byte("test-object"),
-		Value:     []byte("test-data"),
-		Operation: xregion.StateOpSet,
-		Source:    "region1",
-		Target:    "region2",
-	})
+    // Simulate failure after short delay
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        if err := testVM.SimulateRegionFailure(regionID); err != nil {
+            t.Errorf("failed to simulate failure: %v", err)
+        }
+    }()
 
-	// Execute cross-regional transaction
-	action := &actions.CrossRegionAction{
-		Intent: intent,
-	}
-
-	result, err := vm.ExecuteInRegion(ctx, "region1", action)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Simulate region failure after transaction
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		err := vm.SimulateRegionFailure("region1")
-		require.NoError(t, err)
-		close(done)
-	}()
-
-	// Wait for failure simulation
-	<-done
-
-	// Collect health status updates with longer timeout
-	var healthUpdates []*HealthStatus
-	timeout := time.After(2 * time.Second)
-	failureDetected := false
-	recoveryDetected := false
+    // Collect health updates
+    var healthUpdates []*HealthStatus
+    timeout := time.After(2 * time.Second)
+    failureDetected := false
+    recoveryDetected := false
 
 collectHealth:
-	for {
-		select {
-		case status := <-healthChan:
-			if status == nil {
-				break collectHealth
-			}
-			healthUpdates = append(healthUpdates, status)
-			// Break if we detect failure and recovery
-			if status.Status == "failed" {
-				failureDetected = true
-			} else if failureDetected && status.Status == "healthy" {
-				recoveryDetected = true
-				break collectHealth
-			}
-		case <-timeout:
-			// Check if we detected failure and recovery
-			for i, status := range healthUpdates {
-				if status.Status == "failed" {
-					failureDetected = true
-				} else if failureDetected && i > 0 && status.Status == "healthy" {
-					recoveryDetected = true
-					break
-				}
-			}
-			if !failureDetected {
-				t.Fatal("timeout waiting for failure detection")
-			}
-			break collectHealth
-		}
-	}
+    for {
+        select {
+        case status := <-healthChan:
+            if status == nil {
+                break collectHealth
+            }
+            healthUpdates = append(healthUpdates, status)
+            // Break if we detect failure and recovery
+            if status.Status == "failed" {
+                failureDetected = true
+            } else if failureDetected && status.Status == "healthy" {
+                recoveryDetected = true
+                break collectHealth
+            }
+        case <-timeout:
+            // Check if we detected failure and recovery
+            for i, status := range healthUpdates {
+                if status.Status == "failed" {
+                    failureDetected = true
+                } else if failureDetected && i > 0 && status.Status == "healthy" {
+                    recoveryDetected = true
+                    break
+                }
+            }
+            if !failureDetected {
+                t.Fatal("timeout waiting for failure detection")
+            }
+            break collectHealth
+        }
+    }
 
-	require.True(t, failureDetected, "Should have detected failure")
-	require.True(t, recoveryDetected, "Should have detected recovery")
-	require.NotEmpty(t, healthUpdates, "Should have collected health updates")
+    if !failureDetected {
+        t.Error("should have detected failure")
+    }
+    if !recoveryDetected {
+        t.Error("should have detected recovery")
+    }
+    if len(healthUpdates) == 0 {
+        t.Error("should have collected health updates")
+    }
 
-	// Verify TEE pair recovery
-	verifyTEERecovery(t, healthUpdates)
+    // Verify TEE pair recovery
+    verifyTEERecovery(t, healthUpdates)
 }
+
+// Add the monitoring function
+func monitorRegionHealth(ctx context.Context, vm *MockVM, regionID string) <-chan *HealthStatus {
+    statusChan := make(chan *HealthStatus)
+    
+    go func() {
+        defer close(statusChan)
+        ticker := time.NewTicker(100 * time.Millisecond)
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case <-ticker.C:
+                status, err := vm.GetRegionHealth(ctx, regionID)
+                if err != nil {
+                    continue
+                }
+                select {
+                case statusChan <- status:
+                case <-ctx.Done():
+                    return
+                }
+            }
+        }
+    }()
+
+    return statusChan
+}
+
+
