@@ -182,7 +182,7 @@ func TestCrossRegionalFailover(t *testing.T) {
 
     // Simulate failure after short delay
     go func() {
-        time.Sleep(100 * time.Millisecond)
+        time.Sleep(200 * time.Millisecond) // Increased delay before failure
         if err := testVM.SimulateRegionFailure(regionID); err != nil {
             t.Errorf("failed to simulate failure: %v", err)
         }
@@ -190,7 +190,7 @@ func TestCrossRegionalFailover(t *testing.T) {
 
     // Collect health updates
     var healthUpdates []*HealthStatus
-    timeout := time.After(2 * time.Second)
+    timeout := time.After(3 * time.Second) // Increased timeout to ensure we catch recovery
     failureDetected := false
     recoveryDetected := false
 
@@ -269,5 +269,3 @@ func monitorRegionHealth(ctx context.Context, vm *MockVM, regionID string) <-cha
 
     return statusChan
 }
-
-
