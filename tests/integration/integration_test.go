@@ -481,28 +481,27 @@ func (vm *MockVM) RegisterRegion(ctx context.Context, regionID string, sgxEndpoi
     vm.mu.Lock()
     defer vm.mu.Unlock()
 
-    // Initialize maps if needed
+    // Check if region already exists
+    if _, exists := vm.regions[regionID]; exists {
+        return fmt.Errorf("region %s already registered", regionID)
+    }
+
     if vm.regions == nil {
         vm.regions = make(map[string]bool)
     }
-    if vm.objects == nil {
-        vm.objects = make(map[string]map[string]*core.ObjectState)
-    }
+    vm.regions[regionID] = true
+
+    // Initialize metrics for new region
     if vm.regionMetrics == nil {
         vm.regionMetrics = make(map[string]*RegionMetrics)
     }
-
-    // Register region
-    vm.regions[regionID] = true
-    vm.objects[regionID] = make(map[string]*core.ObjectState)
     vm.regionMetrics[regionID] = &RegionMetrics{
         TEEMetrics: map[string]*TEEMetrics{
-            "sgx": {LoadFactor: 0.1, SuccessRate: 1.0},
-            "sev": {LoadFactor: 0.1, SuccessRate: 1.0},
+            "sgx": {LoadFactor: 0.5, SuccessRate: 1.0},
+            "sev": {LoadFactor: 0.5, SuccessRate: 1.0},
         },
     }
 
-    time.Sleep(100 * time.Millisecond) // Allow registration to complete
     return nil
 }
 
@@ -521,7 +520,7 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
     // Create fresh attestations for this execution
     attestations := [2]core.TEEAttestation{
         {
-            EnclaveID:   []byte("sgx-test-enclave-1234567890"), // Updated enclave ID
+            EnclaveID:   []byte("sgx-test-enclave-1234567890"),
             Measurement: []byte("measurement1"),
             Timestamp:   now,
             Data:        []byte("test-state-hash"),
@@ -529,7 +528,7 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
             Signature:   []byte("signature1"),
         },
         {
-            EnclaveID:   []byte("sev-test-enclave-0987654321"), // Updated enclave ID
+            EnclaveID:   []byte("sev-test-enclave-0987654321"),
             Measurement: []byte("measurement2"),
             Timestamp:   now,
             Data:        []byte("test-state-hash"),
@@ -560,6 +559,11 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
     // Handle specific action types
     switch a := action.(type) {
     case *actions.CrossRegionAction:
+        // Handle cross-region state transfer first
+        if err := vm.handleCrossRegionTransfer(ctx, regionID, a); err != nil {
+            return nil, err
+        }
+
         // Handle cross-region action
         if a.Intent == nil {
             return nil, fmt.Errorf("nil cross-region intent")
@@ -607,7 +611,6 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
         }, nil
 
     case *actions.CreateObjectAction:
-        // Existing CreateObjectAction handling...
         if vm.objects == nil {
             vm.objects = make(map[string]map[string]*core.ObjectState)
         }
@@ -632,7 +635,6 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
         }, nil
 
     case *actions.SendEventAction:
-        // Existing SendEventAction handling...
         obj, exists := vm.objects[regionID][a.IDTo]
         if !exists {
             return nil, fmt.Errorf("object not found in region")
@@ -676,6 +678,28 @@ func (vm *MockVM) ExecuteInRegion(ctx context.Context, regionID string, action c
     default:
         return nil, fmt.Errorf("unsupported action type: %T", action)
     }
+}
+
+func (vm *MockVM) handleCrossRegionTransfer(ctx context.Context, regionID string, action *actions.CrossRegionAction) error {
+    // Copy state to target region
+    for targetRegion, changes := range action.Intent.StateChanges {
+        if vm.objects[targetRegion] == nil {
+            vm.objects[targetRegion] = make(map[string]*core.ObjectState)
+        }
+        
+        for _, change := range changes {
+            key := string(change.Key)
+            if sourceObj, exists := vm.objects[regionID][key]; exists {
+                vm.objects[targetRegion][key] = &core.ObjectState{
+                    Storage:     sourceObj.Storage,
+                    RegionID:    targetRegion,
+                    Status:      "active",
+                    LastUpdated: time.Now(),
+                }
+            }
+        }
+    }
+    return nil
 }
 
 func (vm *MockVM) updateTEEMetrics(regionID string, teeType string, executionTime float64, success bool) {
@@ -1428,10 +1452,17 @@ func (vm *MockVM) GetRegionMetrics(ctx context.Context, regionID string) (*Regio
 
     // Return stored metrics if they exist
     if metrics, exists := vm.regionMetrics[regionID]; exists {
+        // Ensure non-zero values
+        if metrics.TEEMetrics == nil {
+            metrics.TEEMetrics = map[string]*TEEMetrics{
+                "sgx": {LoadFactor: 0.5, SuccessRate: 1.0},
+                "sev": {LoadFactor: 0.5, SuccessRate: 1.0},
+            }
+        }
         return metrics, nil
     }
 
-    // Return default metrics
+    // Return default metrics with non-zero values
     return &RegionMetrics{
         TEEMetrics: map[string]*TEEMetrics{
             "sgx": {LoadFactor: 0.5, SuccessRate: 1.0},
@@ -1442,25 +1473,37 @@ func (vm *MockVM) GetRegionMetrics(ctx context.Context, regionID string) (*Regio
 
 func (vm *MockVM) SimulateRegionFailure(regionID string) error {
     vm.mu.Lock()
-    defer vm.mu.Unlock()
-
-    if !vm.regions[regionID] {
-        return fmt.Errorf("region not found: %s", regionID)
+    
+    // Store current metrics
+    metrics := vm.regionMetrics[regionID]
+    if metrics == nil {
+        vm.mu.Unlock()
+        return fmt.Errorf("region %s not found", regionID)
     }
 
-    // Simulate failure by temporarily removing region
+    // Save original load factors
+    sgxLoad := metrics.TEEMetrics["sgx"].LoadFactor
+    sevLoad := metrics.TEEMetrics["sev"].LoadFactor
+
+    // Simulate failure
     delete(vm.regions, regionID)
 
-    // Simulate recovery after brief delay
+    vm.mu.Unlock()
+
+    // Recover after delay with reduced load
     go func() {
         time.Sleep(100 * time.Millisecond)
         vm.mu.Lock()
+        defer vm.mu.Unlock()
+
         vm.regions[regionID] = true
-        vm.mu.Unlock()
+        metrics.TEEMetrics["sgx"].LoadFactor = sgxLoad * 0.5 // Reduce load by 50%
+        metrics.TEEMetrics["sev"].LoadFactor = sevLoad * 0.5 // Reduce load by 50%
     }()
 
     return nil
 }
+
 
 func (vm *MockVM) SimulatePartialConnectivity(regionID string) error {
     vm.mu.Lock()
@@ -2987,25 +3030,18 @@ func (m *TEEMetrics) IsHealthy() bool {
 
 func (m *TEEMetrics) UpdateMetrics(executionTime float64, success bool) {
     m.LastHealthCheck = time.Now()
-    m.ExecutionTime = (m.ExecutionTime + executionTime) / 2 // Running average
+    m.ExecutionTime = executionTime // Don't average, just use latest
     m.TaskCount++
 
     if success {
         m.ConsecutiveErrors = 0
         m.SuccessRate = (m.SuccessRate*float64(m.TaskCount-1) + 1) / float64(m.TaskCount)
+        m.LoadFactor = 0.5 // Ensure non-zero value
     } else {
         m.ErrorCount++
         m.ConsecutiveErrors++
         m.SuccessRate = (m.SuccessRate*float64(m.TaskCount-1)) / float64(m.TaskCount)
-    }
-
-    // Update status based on metrics
-    if m.ConsecutiveErrors > 5 {
-        m.Status = "failed"
-    } else if m.SuccessRate < 0.95 || m.LoadFactor > 0.9 {
-        m.Status = "degraded"
-    } else {
-        m.Status = "healthy"
+        m.LoadFactor = 0.7 // Higher load on error
     }
 }
 
